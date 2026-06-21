@@ -1,0 +1,9 @@
+# data_collector 共用相依套件
+# 安裝： python -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+requests>=2.31        # HTTP 下載 (FinMind API / NBIM / 期交所 / ETF)
+pandas>=2.0           # 資料處理與輸出
+pyarrow>=14.0         # parquet 讀寫 (FinMind 下載)
+openpyxl>=3.1         # 讀取 nbim/stock_info.xlsx
+python-dotenv>=1.0    # 讀取 .env 內的 API token
+lxml>=5.0             # ETF / 網頁表格解析

@@ -1,0 +1,36 @@
+# === 機敏資料 — 絕不上傳 ===
+.env
+*.env
+!.env.example
+
+# === 虛擬環境 ===
+.venv/
+venv/
+
+# === Python 快取 ===
+__pycache__/
+*.pyc
+*.pyo
+
+# === 日誌 / PID / 暫存 ===
+*.log
+*.pids
+*.pid
+*.tmp
+*.parquet.tmp
+
+# === 下載的資料 (量大，不進版控) ===
+data/
+nbim/nbim_data/
+*.parquet
+*.csv
+*.json
+*.zip
+*.xlsx
+
+# 保留範例 / 設定類檔案
+!requirements.txt
+
+# === 編輯器 / 本機設定 ===
+.claude/settings.local.json
+.DS_Store

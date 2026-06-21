@@ -1,0 +1,22 @@
+# 機敏資料 — 絕不上傳 (含 FinMind API token)
+.env
+
+# 虛擬環境
+venv/
+
+# 日誌
+*.log
+
+# Python 快取
+__pycache__/
+*.pyc
+
+# 程序 PID / 暫存檔
+*.pids
+*.tmp
+*.parquet.tmp
+
+# 下載的資料一律不進版控 (存於 D:/finmind_data，量大)
+data/
+*.parquet
+*.csv
