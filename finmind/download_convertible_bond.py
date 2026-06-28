@@ -1,31 +1,21 @@
 #!/usr/bin/env python3
 """
-下載 FinMind「台股 - 籌碼面」資料集 (走 /api/v4/data 端點)。
+下載 FinMind「台股 - 可轉債」資料集 (走 /api/v4/data 端點)。
 
 取得模式 (見 REGISTRY)：
-  - snapshot       : 整表快照 (無日期)，每次重抓覆寫單一檔 (證券商資訊表)
-  - range_snapshot : 一次帶整段 start~today 取回整表，覆寫單一檔
-                     (大盤融資維持率 / 處置證券 / 暫停融券賣出表 — 市場級或稀疏通知，整段一次抓最省請求)
-  - daily          : 逐交易日、整個市場 (不帶 data_id，鎖 start=end=該日)，每日一檔
+  - snapshot : 整表快照 (無日期)，每次重抓覆寫單一檔
+               可轉債總覽 ConvertibleBondInfo (cb_id/cb_name/轉換期間/發行額)
+  - daily    : 逐交易日、整個市場 (不帶 data_id，鎖 start=end=該日)，每日一檔
+               可轉債日成交 ConvertibleBondDaily / 三大法人 ConvertibleBondInstitutionalInvestors /
+               每日總覽 ConvertibleBondDailyOverview
+               (皆 Backer/Sponsor「不帶 data_id 取該日全市場」；最早約 2007-01-02)
 
-storage_objects 的「台股權證分點 TaiwanStockWarrantTradingDailyReport」不在此處，
-改用 download_tick.py --dataset TaiwanStockWarrantTradingDailyReport (2024-01-02 起，更早無物件)。
-
-排除：
-  - TaiwanStockTradingDailyReport (一般分點)：已由 download_tick.py / daily_update.sh 維護 (重複)
-  - TaiwanStockTradingDailyReportSecIdAgg (當日券商分點統計)：該端點需同時帶
-    data_id(股票)+securities_trader_id(券商) 才能查，無「整日全市場」批次模式，不適合完整回補
-
-API 額度保護 (因常與其他 backfill 同時跑)：
-  遇 HTTP 402 / 額度訊息 → **暫停** QUOTA_PAUSE 秒後重試 (配額每小時重置)，最多暫停
-  QUOTA_MAX_PAUSES 次；不會因撞上限而中止丟資料。401/403 (token 失效/無權限) 仍立即中止。
-  另含：連續失敗熔斷、每請求最小間隔、原子寫檔 (tmp→replace) 可安全中斷續傳。
-
-盤中讓道：--blackout 08:00-14:30 期間自動暫停 (不發請求)，時段外自動續跑。
+存 /mnt/d/finmind_data/<dataset>/。沿用 download_chip 的 quota(402 暫停)/blackout/
+原子寫檔/熔斷邏輯。skip-existing 可安全中斷續傳。
 
 用法：
-  python download_chip.py --reverse --blackout 08:00-14:30          # 全部，從近期往回回補
-  python download_chip.py --datasets TaiwanStockShareholding --start 2004-01-01 --reverse
+  python download_convertible_bond.py --reverse --blackout 08:00-14:30        # 全部回補
+  python download_convertible_bond.py --datasets TaiwanStockConvertibleBondDaily --start 2007-01-01
 """
 import argparse
 import sys
@@ -40,26 +30,16 @@ from dotenv import dotenv_values
 BASE_DIR = Path(__file__).resolve().parent
 URL = "https://api.finmindtrade.com/api/v4/data"
 OUT_ROOT = Path("/mnt/d/finmind_data")
-LOG_FILE = BASE_DIR / "download_chip.log"
+LOG_FILE = BASE_DIR / "download_convertible_bond.log"
 
 # 資料集登錄表：mode + 已知最早可用日期 (API 探測得出)
 REGISTRY = {
     # 整表快照 (無日期)
-    "TaiwanSecuritiesTraderInfo":                  {"mode": "snapshot"},
-    # 整段一次抓 (市場級 / 稀疏通知)，覆寫單檔
-    "TaiwanTotalExchangeMarginMaintenance":        {"mode": "range_snapshot", "start": "2001-01-01"},
-    "TaiwanStockDispositionSecuritiesPeriod":      {"mode": "range_snapshot", "start": "2001-01-01"},
-    "TaiwanStockMarginShortSaleSuspension":        {"mode": "range_snapshot", "start": "2015-01-01"},
-    # 逐交易日、整個市場
-    "TaiwanStockMarginPurchaseShortSale":          {"mode": "daily", "start": "2001-01-01"},
-    "TaiwanStockInstitutionalInvestorsBuySell":    {"mode": "daily", "start": "2012-05-01"},
-    "TaiwanStockInstitutionalInvestorsBuySellWide":{"mode": "daily", "start": "2012-05-01"},
-    "TaiwanStockShareholding":                     {"mode": "daily", "start": "2004-02-01"},
-    "TaiwanStockHoldingSharesPer":                 {"mode": "daily", "start": "2010-01-01"},  # 集保週資料，非當週回 nodata
-    "TaiwanStockSecuritiesLending":                {"mode": "daily", "start": "2003-11-01"},
-    "TaiwanDailyShortSaleBalances":                {"mode": "daily", "start": "2005-07-01"},
-    "TaiwanStockLoanCollateralBalance":            {"mode": "daily", "start": "2006-10-01"},  # 限 sponsor
-    "TaiwanStockDayTradingBorrowingFeeRate":       {"mode": "daily", "start": "2015-10-01"},
+    "TaiwanStockConvertibleBondInfo":                 {"mode": "snapshot"},
+    # 逐交易日、整個市場 (不帶 data_id)，最早約 2007-01-02
+    "TaiwanStockConvertibleBondDaily":                {"mode": "daily", "start": "2007-01-01"},
+    "TaiwanStockConvertibleBondInstitutionalInvestors": {"mode": "daily", "start": "2007-01-01"},
+    "TaiwanStockConvertibleBondDailyOverview":        {"mode": "daily", "start": "2007-01-01"},
 }
 ALL_DATASETS = list(REGISTRY.keys())
 
@@ -69,7 +49,6 @@ TIMEOUT = (10, 600)
 MAX_RETRIES = 5
 BACKOFF_BASE = 5
 MAX_CONSECUTIVE_FAILURES = 8
-# 額度 (402) 暫停：每次等多久、最多等幾次 (10 分鐘 × 24 = 最長 4 小時，足以跨過每小時配額重置)
 QUOTA_PAUSE = 600
 QUOTA_MAX_PAUSES = 24
 
@@ -144,7 +123,6 @@ def api_get(session, token, params, blackout=None):
 
         code = resp.status_code
 
-        # --- 額度達上限：暫停等待重置 ---
         if code == 402:
             quota_pauses += 1
             if quota_pauses > QUOTA_MAX_PAUSES:
@@ -181,7 +159,7 @@ def api_get(session, token, params, blackout=None):
 
         if code in (401, 403):
             log(f"    權限錯誤 HTTP {code}: {resp.text[:200]}")
-            log("    -> token 失效或無此資料權限 (部分資料集限 sponsor)。中止。")
+            log("    -> token 失效或無此資料權限 (可轉債限 Backer/Sponsor)。中止。")
             sys.exit(2)
 
         if code == 429 or code >= 500:
@@ -222,11 +200,8 @@ def daily_dates(start: date, end: date):
         d += timedelta(days=1)
 
 
-def download_snapshot(session, token, dataset, params_extra=None, blackout=None):
-    params = {"dataset": dataset}
-    if params_extra:
-        params.update(params_extra)
-    rows, status = api_get(session, token, params, blackout)
+def download_snapshot(session, token, dataset, blackout=None):
+    rows, status = api_get(session, token, {"dataset": dataset}, blackout)
     if status == "ok":
         dest = out_path_snapshot(dataset)
         df = save_parquet(rows, dest)
@@ -250,9 +225,9 @@ def download_dated(session, token, dataset, d: str, blackout=None) -> str:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="下載 FinMind 籌碼面 (/data) 資料集")
+    ap = argparse.ArgumentParser(description="下載 FinMind 可轉債 (/data) 資料集")
     ap.add_argument("--datasets", default=",".join(ALL_DATASETS),
-                    help="逗號分隔；預設全部籌碼面 (/data) 資料集")
+                    help="逗號分隔；預設全部可轉債資料集")
     ap.add_argument("--start", help="覆寫起始日期 (預設用各資料集已知最早日)")
     ap.add_argument("--end", default=date.today().isoformat(), help="結束日期 (預設今天)")
     ap.add_argument("--reverse", action="store_true", help="逐日資料從最近往回下載")
@@ -271,7 +246,7 @@ def main():
     session = requests.Session()
     consecutive_failures = 0
 
-    log(f"==== 開始下載籌碼面資料集 {datasets} | end={args.end} | "
+    log(f"==== 開始下載可轉債資料集 {datasets} | end={args.end} | "
         f"{'reverse' if args.reverse else 'forward'} | blackout={args.blackout or '無'} ====")
 
     for dataset in datasets:
@@ -281,13 +256,6 @@ def main():
 
         if mode == "snapshot":
             download_snapshot(session, token, dataset, blackout=blackout)
-            time.sleep(MIN_REQUEST_INTERVAL)
-            continue
-
-        if mode == "range_snapshot":
-            start = spec["start"]   # 整表覆寫一律抓全史，忽略 --start(避免每日 40 天視窗截斷歷史)
-            download_snapshot(session, token, dataset,
-                              {"start_date": start, "end_date": args.end}, blackout=blackout)
             time.sleep(MIN_REQUEST_INTERVAL)
             continue
 
@@ -321,7 +289,7 @@ def main():
         if failed:
             log(f"  [{dataset}] 失敗日期: {', '.join(failed[:30])}{' ...' if len(failed)>30 else ''}")
 
-    log("==== 籌碼面下載流程結束 ====")
+    log("==== 可轉債下載流程結束 ====")
 
 
 if __name__ == "__main__":

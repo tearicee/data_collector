@@ -311,7 +311,7 @@ def main():
             continue
 
         if mode == "range_snapshot":
-            start = args.start or spec["start"]
+            start = spec["start"]   # 整表覆寫一律抓全史，忽略 --start(避免每日 40 天視窗截斷歷史)
             download_snapshot(session, token, dataset,
                               {"start_date": start, "end_date": args.end})
             time.sleep(MIN_REQUEST_INTERVAL)

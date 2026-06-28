@@ -34,9 +34,10 @@ END=$(date +%F)
 echo "$(TS) [INFO] token 有效，更新全部資料集，視窗 $START ~ $END" >> "$LOG_FILE"
 
 # storage_objects 整日資料 (parquet 直出)
+# 注意：TaiwanStockPriceTick 官方 15:30 發布，20:00 跑 OK。
+#       TaiwanStockTradingDailyReport 官方 21:00 才發布，已移至獨立排程 daily_trading_report.sh (22:00)，
+#       避免此處 20:00 過早抓不到當日分點。
 "$VENV_PY" download_tick.py --dataset TaiwanStockPriceTick \
-    --start "$START" --end "$END" --reverse >> "$LOG_FILE" 2>&1
-"$VENV_PY" download_tick.py --dataset TaiwanStockTradingDailyReport \
     --start "$START" --end "$END" --reverse >> "$LOG_FILE" 2>&1
 
 # /api/v4/data 期貨 + 選擇權逐筆 (JSON→parquet)
