@@ -26,11 +26,21 @@ except Exception as e:
     print(f"CHECK_ERROR:{e}")
     sys.exit(0)
 
+sp = j.get("SponsorInfo", {}) or {}
 spp = j.get("SponsorProInfo", {}) or {}
 level = j.get("level", 0)
-# SponsorPro 仍有效：level>=4 且 SponsorProInfo 狀態 200 且非「已到期」
-if level >= 4 and spp.get("status_code") == 200 and spp.get("msg") != "已到期":
+
+
+def _valid(info):
+    # 訂閱有效：狀態 200 且非「已到期」
+    return info.get("status_code") == 200 and info.get("msg") != "已到期"
+
+
+# 付費等級仍有效即繼續下載：SponsorPro (level>=4, 20000/hr) 或 Sponsor (level>=3, 6000/hr) 任一有效即可。
+# 2026-06-30 SponsorPro 到期後改吃 Sponsor，故不再硬性要求 SponsorPro。
+if _valid(spp) or _valid(sp):
     print("OK")
 else:
-    print(f"EXPIRED level={level} msg={spp.get('msg')!r} "
-          f"expired_date={spp.get('subscription_expired_date')}")
+    print(f"EXPIRED level={level} "
+          f"sponsor_msg={sp.get('msg')!r} sponsor_exp={sp.get('subscription_expired_date')} "
+          f"pro_msg={spp.get('msg')!r} pro_exp={spp.get('subscription_expired_date')}")

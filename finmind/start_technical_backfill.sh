@@ -8,14 +8,14 @@
 #        TaiwanStockDayTrading 2015 起；快照表即時整表抓回
 #   2) 分K TaiwanStockKBar (storage_objects)，2019-01-02 起
 # 兩支都跳過已下載檔 → 可安全重複執行 (續傳)。
-# 內建 --blackout 08:00-14:30：盤中自動暫停 (不發網路請求)，盤後自動續跑，
+# 內建 --blackout 08:00-13:31：盤中自動暫停 (不發網路請求)，盤後自動續跑，
 #   故無需 stop/start cron；想手動停止用 stop_technical_backfill.sh。
 # 已在執行則跳過，避免重複。
 # ============================================================
 DIR=/home/tearicee/data_collector/finmind
 PY=/home/tearicee/data_collector/.venv/bin/python   # 共用 data_collector/.venv
 TODAY=$(date +%F)
-BLACKOUT="08:00-14:30"
+BLACKOUT="08:00-13:31"
 CTL="$DIR/backfill_control.log"
 ts(){ date '+%Y-%m-%d %H:%M:%S'; }
 

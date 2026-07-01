@@ -11,11 +11,11 @@
 #   1. 檢查 token 仍為有效 SponsorPro，過期/降級則跳過 (不打 API)
 #   2. update_dividend.py 掃描日期窗、merge 進 by_stock
 #   內建防封鎖：402/額度自動暫停、每請求最小間隔、401/403 立即中止、原子寫檔。
-#   --blackout 08:00-14:30：排凌晨理論上不觸發，保險保留。已在執行則跳過。
+#   --blackout 08:00-13:31：排凌晨理論上不觸發，保險保留。已在執行則跳過。
 # ============================================================
 DIR=/home/tearicee/data_collector/finmind
 PY=/home/tearicee/data_collector/.venv/bin/python   # 共用 data_collector/.venv
-BLACKOUT="08:00-14:30"
+BLACKOUT="08:00-13:31"
 CTL="$DIR/backfill_control.log"
 ts(){ date '+%Y-%m-%d %H:%M:%S'; }
 

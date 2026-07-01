@@ -14,13 +14,13 @@
 # 來源更新時間多為盤後 Mon-Fri 21:00，故本腳本排深夜/凌晨，40 天視窗可補延遲發布並自動續補缺口。
 # 流程：1) 檢查 token 仍為有效 SponsorPro，否則停止  2) 補抓最近視窗 (skip-existing 續補)
 # 各下載器內建防封鎖：402 配額暫停 + 連續失敗熔斷 + 每請求最小間隔 + 401/403 立即中止。
-# 仍帶 --blackout 08:00-14:30 保險 (排凌晨理論上不觸發)。
+# 仍帶 --blackout 08:00-13:31 保險 (排凌晨理論上不觸發)。
 # ============================================================
 PROJECT_DIR=/home/tearicee/data_collector/finmind
 VENV_PY=/home/tearicee/data_collector/.venv/bin/python   # 共用 data_collector/.venv
 LOG_DIR=/mnt/d/finmind_data/logs
 LOG_FILE="$LOG_DIR/daily_chip.log"
-BLACKOUT="08:00-14:30"
+BLACKOUT="08:00-13:31"
 
 mkdir -p "$LOG_DIR"
 cd "$PROJECT_DIR" || exit 1
@@ -49,7 +49,8 @@ echo "$(TS) [INFO] token 有效，更新籌碼面資料集，視窗 $START ~ $EN
     --blackout "$BLACKOUT" >> "$LOG_FILE" 2>&1
 
 # storage_objects 權證分點
-"$VENV_PY" download_tick.py --dataset TaiwanStockWarrantTradingDailyReport \
-    --start "$START" --end "$END" --reverse --blackout "$BLACKOUT" >> "$LOG_FILE" 2>&1
+# 【2026-07-01 SPONSOR 降級】bulk 已失效，權證分點改由 daily_sponsor_fallback.sh(逐券商, cron 23:30)維護，此行停用。
+# "$VENV_PY" download_tick.py --dataset TaiwanStockWarrantTradingDailyReport \
+#     --start "$START" --end "$END" --reverse --blackout "$BLACKOUT" >> "$LOG_FILE" 2>&1
 
 echo "$(TS) [INFO] 籌碼面每日更新流程結束" >> "$LOG_FILE"

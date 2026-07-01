@@ -9,14 +9,14 @@
 #   降級後(Sponsor)才把對應 cron 從 bulk 換成本 wrapper。詳見 SPONSOR_DOWNGRADE_PLAN.md。
 #
 #   近 N 天視窗 skip-existing：穩態下只抓新交易日；補延遲/漏抓。
-#   含 token 檢查、pgrep 防重複、blackout 08:00-14:30、原子寫檔(下載器內建)。
+#   含 token 檢查、pgrep 防重複、blackout 08:00-13:31、原子寫檔(下載器內建)。
 # ============================================================
 DS="$1"
 WINDOW_DAYS="${2:-7}"
 DIR=/home/tearicee/data_collector/finmind
 PY=/home/tearicee/data_collector/.venv/bin/python
 LOG_DIR=/mnt/d/finmind_data/logs
-BLACKOUT="08:00-14:30"
+BLACKOUT="08:00-13:31"
 ts(){ date '+%Y-%m-%d %H:%M:%S'; }
 mkdir -p "$LOG_DIR"
 cd "$DIR" || exit 1

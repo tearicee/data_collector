@@ -20,7 +20,7 @@ PROJECT_DIR=/home/tearicee/data_collector/finmind
 VENV_PY=/home/tearicee/data_collector/.venv/bin/python   # 共用 data_collector/.venv
 LOG_DIR=/mnt/d/finmind_data/logs
 LOG_FILE="$LOG_DIR/daily_technical.log"
-BLACKOUT="08:00-14:30"
+BLACKOUT="08:00-13:31"
 
 mkdir -p "$LOG_DIR"
 cd "$PROJECT_DIR" || exit 1
@@ -43,7 +43,8 @@ echo "$(TS) [INFO] token 有效，更新技術面資料集，視窗 $START ~ $EN
     --blackout "$BLACKOUT" >> "$LOG_FILE" 2>&1
 
 # storage_objects 分K
-"$VENV_PY" download_tick.py --dataset TaiwanStockKBar \
-    --start "$START" --end "$END" --reverse --blackout "$BLACKOUT" >> "$LOG_FILE" 2>&1
+# 【2026-07-01 SPONSOR 降級】bulk 已失效，KBar 改由 daily_sponsor_fallback.sh(逐股票, cron 18:00)維護，此行停用。
+# "$VENV_PY" download_tick.py --dataset TaiwanStockKBar \
+#     --start "$START" --end "$END" --reverse --blackout "$BLACKOUT" >> "$LOG_FILE" 2>&1
 
 echo "$(TS) [INFO] 技術面每日更新流程結束" >> "$LOG_FILE"

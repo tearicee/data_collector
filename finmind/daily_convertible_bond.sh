@@ -10,13 +10,13 @@
 #
 # 流程：1) 檢查 token 仍有效  2) 補抓最近 40 天視窗 (skip-existing 續補延遲發布)
 # 內建防封鎖：402 配額暫停 + 連續失敗熔斷 + 每請求最小間隔 + 401/403 立即中止 + 原子寫檔。
-# 仍帶 --blackout 08:00-14:30 保險 (排凌晨不會觸發)。已在執行則跳過。
+# 仍帶 --blackout 08:00-13:31 保險 (排凌晨不會觸發)。已在執行則跳過。
 # ============================================================
 PROJECT_DIR=/home/tearicee/data_collector/finmind
 VENV_PY=/home/tearicee/data_collector/.venv/bin/python   # 共用 data_collector/.venv
 LOG_DIR=/mnt/d/finmind_data/logs
 LOG_FILE="$LOG_DIR/daily_convertible_bond.log"
-BLACKOUT="08:00-14:30"
+BLACKOUT="08:00-13:31"
 
 mkdir -p "$LOG_DIR"
 cd "$PROJECT_DIR" || exit 1

@@ -11,7 +11,7 @@ DIR=/home/tearicee/data_collector/finmind
 PY=/home/tearicee/data_collector/.venv/bin/python
 LOG_DIR=/mnt/d/finmind_data/logs
 LOG_FILE="$LOG_DIR/daily_trading_report.log"
-BLACKOUT="08:00-14:30"
+BLACKOUT="08:00-13:31"
 ts(){ date '+%Y-%m-%d %H:%M:%S'; }
 mkdir -p "$LOG_DIR"
 cd "$DIR" || exit 1

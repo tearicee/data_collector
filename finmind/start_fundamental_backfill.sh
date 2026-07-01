@@ -6,13 +6,13 @@
 #     下市櫃表 (快照)、減資/分割/變更面額參考價 (稀疏整段)、
 #     股利政策表/除權除息結果表/市值比重表 (逐股票)
 #   跳過已下載檔 → 可安全重複執行 (續傳)。
-#   內建 --blackout 08:00-14:30：盤中自動暫停、盤後自動續跑。
+#   內建 --blackout 08:00-13:31：盤中自動暫停、盤後自動續跑。
 #   已在執行則跳過，避免重複。
 # ============================================================
 DIR=/home/tearicee/data_collector/finmind
 PY=/home/tearicee/data_collector/.venv/bin/python   # 共用 data_collector/.venv
 TODAY=$(date +%F)
-BLACKOUT="08:00-14:30"
+BLACKOUT="08:00-13:31"
 CTL="$DIR/backfill_control.log"
 ts(){ date '+%Y-%m-%d %H:%M:%S'; }
 
