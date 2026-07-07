@@ -90,31 +90,43 @@ def run(codes: list[str], date: str) -> dict:
     failed: list[str] = []
     nodata: list[str] = []
 
+    # 按發行商分組：同一家的檔連續處理，處理完立即 close 釋放資源。
+    # 這確保任一時刻只有一個 playwright adapter (群益/中信) 活著，
+    # 避免兩個 sync_playwright 實例在同 process 衝突 (asyncio loop 錯誤)。
+    groups: dict[str, list[str]] = {}
     for code in codes:
-        issuer = imap.get(code, "未知")
+        groups.setdefault(imap.get(code, "未知"), []).append(code)
+
+    for issuer, codes_g in groups.items():
         adapter = REGISTRY.get(issuer)
         if adapter is None or isinstance(adapter, StubAdapter):
-            pending[code] = issuer
+            for code in codes_g:
+                pending[code] = issuer
             continue
-        try:
-            raw = adapter.fetch(code, date)
-            if raw is None or len(raw) == 0:
+        for code in codes_g:
+            try:
+                raw = adapter.fetch(code, date)
+                if raw is None or len(raw) == 0:
+                    nodata.append(code)
+                else:
+                    df = adapter.normalize(raw, code, date)
+                    path = _save_one(df, issuer, code, date)
+                    print(f"[raw] {issuer} {code} → {len(df)} 筆, {path}")
+                    done.append(code)
+            except NotSupportedYet:
+                pending[code] = issuer
+            except ValueError as e:                      # 查無資料 / 尚未公告
+                print(f"[raw] {issuer} {code} 無資料: {e}")
                 nodata.append(code)
-            else:
-                df = adapter.normalize(raw, code, date)
-                path = _save_one(df, issuer, code, date)
-                print(f"[raw] {issuer} {code} → {len(df)} 筆, {path}")
-                done.append(code)
-        except NotSupportedYet:
-            pending[code] = issuer
-        except ValueError as e:                          # 查無資料 / 尚未公告
-            print(f"[raw] {issuer} {code} 無資料: {e}")
-            nodata.append(code)
-        except Exception as e:                            # noqa: BLE001
-            print(f"[raw][error] {issuer} {code} 失敗: {e}", file=sys.stderr)
-            failed.append(code)
-        # 只有實際打過 API 才節流 (pending 已 continue，不會走到這)
-        time.sleep(SLEEP_BETWEEN)
+            except Exception as e:                        # noqa: BLE001
+                print(f"[raw][error] {issuer} {code} 失敗: {e}", file=sys.stderr)
+                failed.append(code)
+            time.sleep(SLEEP_BETWEEN)
+        # 該發行商處理完，立即釋放資源 (playwright browser 及時關閉)
+        try:
+            adapter.close()
+        except Exception:                                # noqa: BLE001
+            pass
 
     # 待補 adapter 清單 (供健檢摘要)
     RAW_DIR.mkdir(parents=True, exist_ok=True)
