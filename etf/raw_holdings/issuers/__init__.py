@@ -18,3 +18,4 @@ from . import mega     # noqa: F401  觸發 @register("兆豐")
 from . import kgi      # noqa: F401  觸發 @register("凱基")
 from . import taishin  # noqa: F401  觸發 @register("台新")
 from . import nomura   # noqa: F401  觸發 @register("野村")
+from . import shinkong # noqa: F401  觸發 @register("新光") — 併入台新，沿用 tsit 端點

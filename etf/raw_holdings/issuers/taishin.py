@@ -97,4 +97,4 @@ class TaishinAdapter(IssuerAdapter):
                 out["date"] = d.strftime("%Y%m%d")
                 out["fund_code"] = fund_code
                 return out
-        raise ValueError(f"台新 {fund_code} 近 {MAX_LOOKBACK} 日查無持股 (自 {date})")
+        raise ValueError(f"{self.issuer} {fund_code} 近 {MAX_LOOKBACK} 日查無持股 (自 {date})")
