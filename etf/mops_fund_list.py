@@ -55,6 +55,8 @@ CODE_RE = re.compile(r"^\d{4,6}[A-Z]?$")
 LATEST_CSV = "fund_master_latest.csv"
 CODES_JSON = "fund_codes.json"
 SNAPSHOT_FMT = "基金基本資料彙總表_{date}.csv"
+LISTED_STATE = "listed_notified.json"      # 已通知過掛牌的代號集合
+LISTING_WINDOW_DAYS = 14                    # 只通知掛牌日在近 N 天內者 (避免補資料誤報舊檔)
 
 
 def fetch_master() -> pd.DataFrame:
@@ -141,8 +143,12 @@ def main():
     else:
         print("[mops] 無前一份快照，首建主檔 (不報代號異動)")
 
+    # 依「上市日期」偵測最近掛牌上市/上櫃的 ETF → Discord 通知
+    ref_date = datetime.strptime(date_str, "%Y%m%d").date()
+    listed = _notify_new_listings(df, ref_date)
+
     # 寫心跳 (資料層)
-    _write_heartbeat(len(df), new_codes, removed_codes)
+    _write_heartbeat(len(df), new_codes, removed_codes, listed)
 
 
 def _notify_change(df: pd.DataFrame, new_codes, removed_codes):
@@ -168,13 +174,91 @@ def _notify_change(df: pd.DataFrame, new_codes, removed_codes):
         print(f"[mops][warn] 代號異動通知送出失敗: {e}", file=sys.stderr)
 
 
-def _write_heartbeat(total, new_codes, removed_codes):
+def _roc_to_date(s):
+    """民國日期字串 (YYY/MM/DD) → datetime.date；無法解析回 None。"""
+    from datetime import date
+    m = re.match(r"\s*(\d{2,3})/(\d{1,2})/(\d{1,2})\s*$", str(s))
+    if not m:
+        return None
+    y, mth, d = int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3))
+    try:
+        return date(y, mth, d)
+    except ValueError:
+        return None
+
+
+def _notify_new_listings(df: pd.DataFrame, ref_date) -> list[str]:
+    """依『上市日期』找最近掛牌上市/上櫃的 ETF，去重後發 Discord。回傳本次通知代號。
+
+    - 狀態檔 listed_notified.json 記已通知代號，避免重複洗頻。
+    - 首次執行 (無狀態檔) 只把「目前已掛牌」全部納入基線、不通知，之後才報新掛牌。
+    - 僅通知掛牌日在近 LISTING_WINDOW_DAYS 天內者，避免補歷史資料時誤報舊檔。
+    """
+    from datetime import timedelta
+    if "上市日期" not in df.columns:
+        return []
+    state_path = MASTER_DIR / LISTED_STATE
+    try:
+        notified = set(json.loads(state_path.read_text(encoding="utf-8")))
+    except Exception:                                # noqa: BLE001
+        notified = None                              # None = 首次 (建基線)
+
+    # 掃出所有「已掛牌」(上市日期 <= ref_date) 的代號
+    listed_all: dict[str, object] = {}
+    for _, row in df.iterrows():
+        d = _roc_to_date(row.get("上市日期"))
+        if d and d <= ref_date:
+            listed_all[str(row["基金代號"]).strip()] = d
+
+    if notified is None:                             # 首次執行：建基線、不通知
+        state_path.write_text(json.dumps(sorted(listed_all), ensure_ascii=False),
+                              encoding="utf-8")
+        print(f"[mops] 首次建立掛牌基線 {len(listed_all)} 檔 (不通知)")
+        return []
+
+    window_start = ref_date - timedelta(days=LISTING_WINDOW_DAYS)
+    fresh = [c for c, d in listed_all.items()
+             if c not in notified and d >= window_start]
+    fresh.sort(key=lambda c: (listed_all[c], c))
+
+    # 無論是否落在通知窗，都把已掛牌者納入基線 (避免窗外舊檔日後補報)
+    notified.update(listed_all)
+    state_path.write_text(json.dumps(sorted(notified), ensure_ascii=False),
+                          encoding="utf-8")
+
+    if fresh:
+        print(f"[mops] 最近掛牌上市/上櫃 {len(fresh)} 檔: {fresh}")
+        _post_new_listings(df, fresh, listed_all)
+    return fresh
+
+
+def _post_new_listings(df: pd.DataFrame, codes, listed_dates):
+    """最近掛牌 ETF → Discord 事件通知。"""
+    try:
+        from common import notify_discord
+    except Exception:                                # noqa: BLE001
+        return
+    lines = [f"📢 **ETF 掛牌上市/上櫃通知** — {len(codes)} 檔"]
+    for c in codes:
+        row = df[df["基金代號"] == c]
+        name = row["基金簡稱"].iloc[0] if len(row) else ""
+        typ = row["基金類型"].iloc[0] if len(row) and "基金類型" in df.columns else ""
+        d = listed_dates.get(c)
+        lines.append(f"  `{c}`  {name}  掛牌日 {d}  ({typ})")
+    try:
+        notify_discord.post("\n".join(lines), code_block=False)
+    except Exception as e:                            # noqa: BLE001
+        print(f"[mops][warn] 掛牌通知送出失敗: {e}", file=sys.stderr)
+
+
+def _write_heartbeat(total, new_codes, removed_codes, listed=None):
     try:
         from common import heartbeat
         heartbeat.write("mops_fund_list", status="ok", exit_code=0,
                         message="主檔更新成功",
                         stats={"total": total, "new": new_codes,
-                               "removed": removed_codes})
+                               "removed": removed_codes,
+                               "listed": listed or []})
     except Exception:                                # noqa: BLE001
         pass
 
