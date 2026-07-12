@@ -33,7 +33,30 @@ ETF_DATA = D / "etf_daily_holdings" / "data"
 FUND_MASTER = D / "etf_daily_holdings" / "fund_master"
 RAW_DIR = D / "etf_daily_holdings_raw"
 
-STALE_HOURS = 26            # 心跳超過此時數未更新視為 stale
+STALE_HOURS = 26            # 心跳超過此時數未更新視為 stale (僅備援)
+
+
+def _last_business_day(today):
+    """回傳「今天之前最近的一個工作日」(週一~五)。
+
+    爬蟲多為週一~五傍晚執行、健檢於隔日早上 07:00 檢查，故任務只要在最近一個
+    已過去的工作日有跑就算正常；週六/日/週一早上不因週末閒置而誤報 stale。
+    """
+    from datetime import date, timedelta as _td
+    d = today - _td(days=1)
+    while d.weekday() >= 5:                       # 5=六 6=日
+        d -= _td(days=1)
+    return d
+
+
+def _is_stale(last_iso: str, now) -> bool:
+    """任務是否逾期未更新 (營業日感知)。無法解析時間視為 stale。"""
+    try:
+        dt = datetime.fromisoformat(last_iso)
+    except Exception:                            # noqa: BLE001
+        return True
+    # 最近一個工作日「之前」都沒跑 → stale；當天/更晚有跑 → 正常
+    return dt.date() < _last_business_day(now.date())
 
 
 def _latest_day_count(directory: Path, pattern: str = "*.csv") -> tuple[str, int]:
@@ -83,18 +106,20 @@ def build_report() -> tuple[str, bool]:
     for job, hb in sorted(hbs.items()):
         last = hb.get("last_run", "")
         status = hb.get("status", "?")
-        stale = False
-        try:
-            dt = datetime.fromisoformat(last)
-            stale = (now - dt) > timedelta(hours=STALE_HOURS)
-        except Exception:                            # noqa: BLE001
-            stale = True
+        stale = _is_stale(last, now)
         mark = "OK "
         if status != "ok":
             mark = "FAIL"; problems.append(f"{job} 失敗")
         elif stale:
             mark = "STALE"; problems.append(f"{job} 逾 {STALE_HOURS}h 未更新")
         stats = hb.get("stats") or {}
+        # 任務本身 status=ok，但 stats.failed 內含實際失敗的代號時仍視為異常
+        # (如 etf_crawler 某檔持續拋例外)，讓需維修的爬蟲能浮現告警。
+        failed_items = stats.get("failed") or []
+        if failed_items and mark == "OK ":
+            mark = "WARN"
+        if failed_items:
+            problems.append(f"{job} 有 {len(failed_items)} 檔失敗: {failed_items}")
         stats_s = ("  " + json.dumps(stats, ensure_ascii=False)) if stats else ""
         lines.append(f"  [{mark:<5}] {job:<20} {last}{stats_s}")
 
@@ -131,15 +156,8 @@ def build_report() -> tuple[str, bool]:
             lines.append(f"  CMoney 無資料代號  {len(us)} 檔")
         except Exception:                            # noqa: BLE001
             pass
-    pending = RAW_DIR / "pending_adapters.json"
-    if pending.exists():
-        try:
-            pa = json.loads(pending.read_text(encoding="utf-8"))
-            if pa:
-                issuers = sorted(set(pa.values())) if isinstance(pa, dict) else []
-                lines.append(f"  待補投信 adapter   {len(pa)} 檔 / {len(issuers)} 家: {issuers}")
-        except Exception:                            # noqa: BLE001
-            pass
+    # 註: 未實作 adapter 的投信 (pending_adapters.json) 為刻意凍結的名單，
+    # 不再視為待補事項，故健檢不列出、不告警 (見 run_raw 仍會寫檔供人工查閱)。
 
     # ---- 結論 ----
     lines.append("\n" + "=" * 46)
@@ -155,6 +173,8 @@ def build_report() -> tuple[str, bool]:
 def main():
     ap = argparse.ArgumentParser(description="每日健檢摘要")
     ap.add_argument("--dry", action="store_true", help="只印出，不送 Discord")
+    ap.add_argument("--always", action="store_true",
+                    help="即使一切正常也送 Discord (預設只在有異常時才送)")
     ap.add_argument("--now", action="store_true", help="(相容用) 立即執行")
     args = ap.parse_args()
 
@@ -162,6 +182,11 @@ def main():
     print(report)
 
     if args.dry:
+        return
+
+    # 一切正常時不另外通知 (只在有異常時才發 Discord)，避免每日 🟢 洗頻。
+    if not has_problem and not args.always:
+        print("[healthcheck] 無異常，略過 Discord 通知 (--always 可強制送出)")
         return
 
     try:
