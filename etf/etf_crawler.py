@@ -104,20 +104,34 @@ def setup_logging():
 # ============================================================
 # 抓取名單 / 無資料清單
 # ============================================================
+def _apply_exclusions(codes: list[str]) -> list[str]:
+    """套用共用排除清單 (etf/exclusions.py)：排除商品/發行商不抓、不告警。"""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import exclusions
+        kept, dropped = exclusions.filter_codes(codes)
+        if dropped:
+            logging.info(f"排除 {len(dropped)} 檔 (exclusions.py): {dropped}")
+        return kept
+    except Exception as e:                               # noqa: BLE001
+        logging.warning(f"套用排除清單失敗 ({e})，維持原名單")
+        return codes
+
+
 def load_stock_ids() -> list[str]:
-    """讀 MOPS 主檔 fund_codes.json (全母體)。讀不到時退回內建 28 檔。"""
+    """讀 MOPS 主檔 fund_codes.json (全母體)，套用排除清單。讀不到時退回內建 28 檔。"""
     try:
         with open(FUND_CODES_JSON, encoding="utf-8") as f:
             codes = json.load(f)
         if codes:
             logging.info(f"讀取主檔名單 {len(codes)} 檔 ({FUND_CODES_JSON})")
-            return list(codes)
+            return _apply_exclusions(list(codes))
         logging.warning("主檔名單為空，改用內建 fallback 名單")
     except FileNotFoundError:
         logging.warning("找不到 fund_codes.json，改用內建 fallback 名單 (請先跑 mops_fund_list.py)")
     except Exception as e:
         logging.warning(f"讀取主檔名單失敗 ({e})，改用內建 fallback 名單")
-    return list(FALLBACK_STOCK_IDS)
+    return _apply_exclusions(list(FALLBACK_STOCK_IDS))
 
 
 def load_unsupported() -> dict:

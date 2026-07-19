@@ -56,17 +56,31 @@ TRACKED_28 = [
 SLEEP_BETWEEN = 3.0     # 各基金間隔 (秒)，禮貌節流
 
 
+def _apply_exclusions(codes: list[str]) -> list[str]:
+    """套用共用排除清單 (etf/exclusions.py)：排除商品/發行商不抓、不計 pending。"""
+    try:
+        import exclusions
+        kept, dropped = exclusions.filter_codes(codes)
+        if dropped:
+            print(f"[raw] 排除 {len(dropped)} 檔 (exclusions.py): {dropped}")
+        return kept
+    except Exception as e:                               # noqa: BLE001
+        print(f"[raw] 套用排除清單失敗 ({e})，維持原名單", file=sys.stderr)
+        return codes
+
+
 def load_codes(cli_codes: str | None) -> list[str]:
     if cli_codes:
+        # 手動指定的代號尊重使用者意圖，不套排除
         return [c.strip() for c in cli_codes.split(",") if c.strip()]
     # 預設跑全母體：有 adapter 的發行商全部 ETF 都抓 raw，其餘歸 pending。
     try:
         codes = json.loads(FUND_CODES_JSON.read_text(encoding="utf-8"))
         if codes:
-            return list(codes)
+            return _apply_exclusions(list(codes))
     except Exception:
         pass
-    return list(TRACKED_28)          # 主檔讀不到時的保底
+    return _apply_exclusions(list(TRACKED_28))          # 主檔讀不到時的保底
 
 
 def _save_one(df: pd.DataFrame, issuer: str, code: str, date: str) -> Path:
