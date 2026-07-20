@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import heartbeat, notify_discord  # noqa: E402
+from common import heartbeat, market_closures, notify_discord  # noqa: E402
 
 if sys.platform == "win32":
     D = Path(r"D:\\")
@@ -37,16 +37,15 @@ STALE_HOURS = 26            # 心跳超過此時數未更新視為 stale (僅備
 
 
 def _last_business_day(today):
-    """回傳「今天之前最近的一個工作日」(週一~五)。
+    """回傳「今天之前最近的一個工作日」(週一~五，且非臨時休市日)。
 
     爬蟲多為週一~五傍晚執行、健檢於隔日早上 07:00 檢查，故任務只要在最近一個
     已過去的工作日有跑就算正常；週六/日/週一早上不因週末閒置而誤報 stale。
+
+    臨時休市日 (颱風假等，見 common/market_closures.py) 當天全市場無資料、
+    爬蟲不會有產出，故一併跳過，避免休市隔日誤報 stale。
     """
-    from datetime import date, timedelta as _td
-    d = today - _td(days=1)
-    while d.weekday() >= 5:                       # 5=六 6=日
-        d -= _td(days=1)
-    return d
+    return market_closures.last_business_day(today)
 
 
 def _is_stale(last_iso: str, now) -> bool:
