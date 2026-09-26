@@ -1,7 +1,8 @@
 #!/bin/bash
 # ============================================================
 # 通用 cron 任務包裝器
-#   用法: run_with_alert.sh <job-name> -- <command...>
+#   用法: run_with_alert.sh [--cadence daily|weekly|monthly|yearly] <job-name> -- <command...>
+#         --cadence 寫進心跳檔，每日健檢依此判斷逾期 (預設 daily)
 #
 # 功能:
 #   1. 執行 command，輸出同時顯示並存入暫存 log
@@ -15,6 +16,12 @@ set -u
 
 DC_ROOT=/home/tearicee/data_collector
 VENV_PY="$DC_ROOT/.venv/bin/python"
+
+CADENCE_ARGS=()
+if [ "${1:-}" = "--cadence" ]; then
+    CADENCE_ARGS=(--cadence "${2:?--cadence 需要值}")
+    shift 2
+fi
 
 JOB="${1:-unknown}"; shift || true
 if [ "${1:-}" = "--" ]; then shift; fi
@@ -35,7 +42,7 @@ if [ "$rc" -eq 0 ]; then STATUS=ok; else STATUS=fail; fi
 
 # 執行層心跳 (--merge-stats: 保留 python 任務先寫入的資料統計)
 "$VENV_PY" "$DC_ROOT/common/heartbeat.py" "$JOB" \
-    --status "$STATUS" --exit-code "$rc" --merge-stats \
+    --status "$STATUS" --exit-code "$rc" --merge-stats "${CADENCE_ARGS[@]}" \
     --message "$(if [ $rc -eq 0 ]; then echo '執行成功'; else echo "執行失敗 (exit=$rc)"; fi)" \
     >/dev/null 2>&1 || true
 

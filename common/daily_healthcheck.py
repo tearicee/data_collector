@@ -35,6 +35,11 @@ RAW_DIR = D / "etf_daily_holdings_raw"
 
 STALE_HOURS = 26            # 心跳超過此時數未更新視為 stale (僅備援)
 
+# 非每日任務的逾期門檻 (日曆天)。心跳檔的 cadence 欄位優先；舊心跳檔沒有欄位時
+# 用 DEFAULT_CADENCE 補，否則像 insider_holding (每月 20 號) 會天天被判 STALE。
+CADENCE_MAX_DAYS = {"weekly": 8, "monthly": 35, "yearly": 400}
+DEFAULT_CADENCE = {"insider_holding": "monthly"}
+
 
 def _last_business_day(today):
     """回傳「今天之前最近的一個工作日」(週一~五，且非臨時休市日)。
@@ -48,13 +53,23 @@ def _last_business_day(today):
     return market_closures.last_business_day(today)
 
 
-def _is_stale(last_iso: str, now) -> bool:
-    """任務是否逾期未更新 (營業日感知)。無法解析時間視為 stale。"""
+def _cadence(job: str, hb: dict) -> str:
+    return hb.get("cadence") or DEFAULT_CADENCE.get(job, "daily")
+
+
+def _is_stale(last_iso: str, now, cadence: str = "daily") -> bool:
+    """任務是否逾期未更新。無法解析時間視為 stale。
+
+    daily: 最近一個工作日「之前」都沒跑 → stale (營業日感知，週末/休市不誤報)。
+    weekly/monthly/yearly: 距上次執行超過 CADENCE_MAX_DAYS 日曆天 → stale。
+    """
     try:
         dt = datetime.fromisoformat(last_iso)
     except Exception:                            # noqa: BLE001
         return True
-    # 最近一個工作日「之前」都沒跑 → stale；當天/更晚有跑 → 正常
+    max_days = CADENCE_MAX_DAYS.get(cadence)
+    if max_days is not None:
+        return (now - dt).days > max_days
     return dt.date() < _last_business_day(now.date())
 
 
@@ -105,12 +120,16 @@ def build_report() -> tuple[str, bool]:
     for job, hb in sorted(hbs.items()):
         last = hb.get("last_run", "")
         status = hb.get("status", "?")
-        stale = _is_stale(last, now)
+        cadence = _cadence(job, hb)
+        stale = _is_stale(last, now, cadence)
         mark = "OK "
         if status != "ok":
             mark = "FAIL"; problems.append(f"{job} 失敗")
         elif stale:
-            mark = "STALE"; problems.append(f"{job} 逾 {STALE_HOURS}h 未更新")
+            mark = "STALE"
+            limit = (f"{CADENCE_MAX_DAYS[cadence]} 天" if cadence in CADENCE_MAX_DAYS
+                     else f"{STALE_HOURS}h")
+            problems.append(f"{job} 逾 {limit} 未更新 ({cadence})")
         stats = hb.get("stats") or {}
         # 任務本身 status=ok，但 stats.failed 內含實際失敗的代號時仍視為異常
         # (如 etf_crawler 某檔持續拋例外)，讓需維修的爬蟲能浮現告警。
@@ -120,7 +139,8 @@ def build_report() -> tuple[str, bool]:
         if failed_items:
             problems.append(f"{job} 有 {len(failed_items)} 檔失敗: {failed_items}")
         stats_s = ("  " + json.dumps(stats, ensure_ascii=False)) if stats else ""
-        lines.append(f"  [{mark:<5}] {job:<20} {last}{stats_s}")
+        cad_s = f"  ({cadence})" if cadence != "daily" else ""
+        lines.append(f"  [{mark:<5}] {job:<20} {last}{cad_s}{stats_s}")
 
     # ---- B. 資料落地 ----
     lines.append("\n[資料落地 (最新一天檔數)]")

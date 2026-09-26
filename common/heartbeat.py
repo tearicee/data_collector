@@ -27,19 +27,29 @@ STATUS_OK = "ok"
 STATUS_FAIL = "fail"
 
 
+CADENCES = ("daily", "weekly", "monthly", "yearly")
+
+
 def write(job: str, status: str = STATUS_OK, exit_code: int = 0,
           message: str = "", stats: dict | None = None,
-          merge_stats: bool = False) -> Path:
+          merge_stats: bool = False, cadence: str | None = None) -> Path:
     """寫入 (覆寫) 某任務的心跳檔，回傳檔案路徑。
 
     merge_stats=True 且未提供 stats 時，沿用現有心跳檔的 stats。用於外層
     wrapper 更新執行狀態 (status/exit_code) 但保留 python 任務先寫入的資料
     統計 (stats)，避免互相覆蓋。
+
+    cadence 為任務的預期週期 (daily/weekly/monthly/yearly)，每日健檢據此判斷
+    是否逾期；未給時沿用現有心跳檔的 cadence，健檢端再退回預設表。
     """
     HEARTBEAT_DIR.mkdir(parents=True, exist_ok=True)
+    prev = read(job) if (merge_stats or cadence is None) else None
     if stats is None and merge_stats:
-        prev = read(job)
         stats = (prev or {}).get("stats") if prev else None
+    if cadence is None and prev:
+        cadence = prev.get("cadence")
+    if cadence is not None and cadence not in CADENCES:
+        raise ValueError(f"cadence 必須是 {CADENCES} 之一: {cadence}")
     payload = {
         "job": job,
         "last_run": datetime.now().isoformat(timespec="seconds"),
@@ -48,6 +58,8 @@ def write(job: str, status: str = STATUS_OK, exit_code: int = 0,
         "message": message,
         "stats": stats or {},
     }
+    if cadence:
+        payload["cadence"] = cadence
     path = HEARTBEAT_DIR / f"{job}.json"
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
@@ -88,7 +100,10 @@ if __name__ == "__main__":
     ap.add_argument("--message", default="")
     ap.add_argument("--merge-stats", action="store_true",
                     help="沿用現有心跳檔的 stats (只更新執行狀態)")
+    ap.add_argument("--cadence", choices=CADENCES,
+                    help="任務預期週期 (健檢依此判斷逾期); 未給沿用現有心跳檔")
     args = ap.parse_args()
     path = write(args.job, status=args.status, exit_code=args.exit_code,
-                 message=args.message, merge_stats=args.merge_stats)
+                 message=args.message, merge_stats=args.merge_stats,
+                 cadence=args.cadence)
     print(f"心跳已寫入 {path}")
