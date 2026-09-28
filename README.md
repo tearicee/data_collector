@@ -95,12 +95,31 @@ data_collector/
 
 ---
 
+## 📁 material_info/ — 全市場重大訊息
+
+爬 MOPS「當日重大訊息」(t05st02) 全日清單 + 逐筆內文，涵蓋上市/上櫃/興櫃/公開發行。**07:00~23:50 每 10 分鐘輪詢新訊息；07:20 回掃近 3 天 + OpenAPI 對帳**。只存本機 D 槽，不同步雲端。
+
+| 檔案 | 用途 |
+|---|---|
+| `download_material_info.py` | `--mode poll` 抓今天清單只補新訊息內文；`--mode daily` 回掃近 3 天、重抓缺內文、用 TWSE/TPEx OpenAPI `t187ap04` (前一日上市/上櫃) 對帳補漏；`--start/--end` 區間回補 (四市場) |
+| `backfill_t51sb10.py` | 歷史回補：MOPS「重大訊息主旨全文檢索」(t51sb10_q1) 市場別查詢 上市/上櫃，含爬蟲禮儀 (間隔/長休/被擋冷卻/斷點續傳) |
+| `store.py` | Parquet 儲存層：月檔 upsert (跨行程寫入鎖)、區間/增量讀取 |
+| `query_material_info.py` | 查閱工具：依日期/公司/市場/關鍵字篩選，可匯出 CSV 給 Excel、`--fetched-after` 取增量 (推播用) |
+| `run_material_info.sh` | cron 啟動腳本 (`poll`/`daily`)，經 `common/run_with_alert.sh` 告警、flock 防重疊 |
+
+**資料存放**：`D:/mops/material_info/data/重大訊息_YYYY-MM.parquet`（依發言日期月份分檔，zstd，約為 CSV 的 1/3.7）。欄位：公司代號、公司簡稱、發布時間、主旨、說明 + 市場別/符合條款/事實發生日/發言人/來源/MOPS鍵/抓取時間。
+
+> MOPS 首頁「即時重大訊息」(t05sr01_1) API 只回最新 20 筆，故改用 t05st02 全日清單；DR 公司內文走 `t59sb01_detail`。
+
+---
+
 ## ⏰ 自動排程 (crontab)
 
 | 時間 | 工作 |
 |---|---|
 | 06:00 每天 | `taifex/run_taifex_daily.sh` — 期交所期貨+選擇權下載 + 同步雲端 |
 | 18:55 週一~五 | `etf/run_crawler.sh` — ETF 持股爬蟲 (隨機延遲 0~10 分) + 同步雲端 |
+| 07:00~23:50 每 10 分 / 07:20 每天 | `material_info/run_material_info.sh poll` / `daily` — 重大訊息輪詢 / 回掃對帳 (僅存 D 槽) |
 | 20:00 每天 | `finmind/daily_update.sh` — FinMind 股票 tick 每日更新 + 同步雲端 |
 
 > 其餘 crontab 項目 (tick_alert、Dashboard) 屬其他專案，不在本資料夾範圍。
