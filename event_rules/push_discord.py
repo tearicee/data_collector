@@ -26,6 +26,7 @@ STATE = Path("/mnt/d/mops/news/state/pushed_events.json")
 STOCK_INFO = "/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet"
 ENV_VAR = "DISCORD_WEBHOOK_URL_NEWS_FRESHNESS"
 THRESHOLD, LOOKBACK_HOURS, MAX_PER_RUN, DAILY_TOP = 7.0, 6, 10, 15
+SUMMARY_LEN = 110
 
 
 def webhook() -> str:
@@ -54,33 +55,61 @@ def stock_label(stocks: str, nm: dict) -> str:
     return "、".join(f"{c} {nm.get(c, '')}".strip() for c in codes)
 
 
-def fmt(r, nm: dict) -> str:
-    icon = "🔴" if r.score >= 9 else ("🟠" if r.score >= 8 else "🟡")
-    head = f"{icon} **{r.event_score:.1f} 分**" + (f"｜{r.direction}" if r.direction else "")
-    who = stock_label(r.stocks, nm)
-    head += f"｜{who}" if who else ""
-    lines = [head, f"**{r.title}**"]
-    lines += [f"• {x}" for x in str(r.reasons).split("；") if x]
-    if r.market_reason:
-        lines += [f"• 市場：{x}" for x in str(r.market_reason).split("；") if x]
-    src = f"{r.source} {r.time:%m-%d %H:%M}"
-    if r.n_reports > 1:
-        src += f"｜共 {r.n_reports} 篇 / {r.n_sources} 家"
-    link = r.id if str(r.id).startswith("http") else ""
-    lines.append(f"{src}" + (f"\n<{link}>" if link else ""))
+def summaries(ids: set) -> dict:
+    """id (新聞連結 / MOPS鍵) → 一句摘要。新聞取摘要或內文第一句；重訊取抽出的重點。"""
+    out = {}
+    for f in sorted(glob.glob("/mnt/d/mops/news/data/新聞_*.parquet"))[-2:]:
+        d = pd.read_parquet(f, columns=["連結", "摘要", "內文"])
+        d = d[d["連結"].isin(ids)]
+        for link, summ, body in zip(d["連結"], d["摘要"], d["內文"]):
+            text = (body or summ or "").replace("\n", " ").strip()
+            out[link] = text[:SUMMARY_LEN] + ("…" if len(text) > SUMMARY_LEN else "")
+    for f in sorted(glob.glob("/mnt/d/mops/material_info/derived/重訊事件_*.parquet"))[-2:]:
+        d = pd.read_parquet(f, columns=["MOPS鍵", "數據"])
+        d = d[d["MOPS鍵"].isin(ids) & (d["數據"] != "")]
+        for key, data in zip(d["MOPS鍵"], d["數據"]):
+            j = json.loads(data)
+            if "澄清" in j:
+                c = j["澄清"]
+                out[key] = f"報導：{c.get('報導內容', '')[:60]}｜公司：{c.get('公司說明', '')[:80]}".replace("\n", "")
+            elif "私募" in j:
+                p = j["私募"]
+                out[key] = (f"私募 {p.get('私募股數', 0):,.0f} 股，每股 {p.get('私募價格', '?')} 元"
+                            f"（參考價 {p.get('參考價格', '?')}，折價 {p.get('折價率_pct', '?')}%）")
+            elif "自結" in j:
+                a = j["自結"]
+                out[key] = (f"{a.get('資料月份', '')} 自結：營收 {a.get('營收_最近一月', '?')}、"
+                            f"EPS {a.get('EPS_最近一月', '?')} 元（年增 {a.get('EPS_月年增_pct', '?')}%）")
+    return out
+
+
+def fmt(r, nm: dict, summ: dict) -> str:
+    """乾淨格式：日期時間 代號 名稱 多/空 標題，第二行摘要，第三行連結。"""
+    codes = [c for c in str(r.stocks).split(",") if c][:1]
+    code = codes[0] if codes else "－"
+    name = nm.get(code, "") if codes else ""
+    line = f"{r.time:%Y-%m-%d %H:%M:%S} {code} {name} {r.direction or '－'} {r.title}".replace("  ", " ")
+    lines = [line]
+    if summ.get(r.id):
+        lines.append(summ[r.id])
+    if str(r.id).startswith("http"):
+        lines.append(f"<{r.id}>")
     return "\n".join(lines)
 
 
-def instant(dry: bool) -> int:
+def instant(dry: bool, resend_hours: int = 0) -> int:
     sc, nm = load(), names()
     pushed = set(json.loads(STATE.read_text()) if STATE.exists() else [])
     first_run = not STATE.exists()
-    recent = sc[(sc["time"] >= pd.Timestamp.now() - pd.Timedelta(hours=LOOKBACK_HOURS))
+    hours = resend_hours or LOOKBACK_HOURS
+    recent = sc[(sc["time"] >= pd.Timestamp.now() - pd.Timedelta(hours=hours))
                 & (sc["event_score"] >= THRESHOLD)]
     best = recent.sort_values("event_score", ascending=False).drop_duplicates("event_id")
-    todo = best[~best["event_id"].isin(pushed)].sort_values("time").head(MAX_PER_RUN)
+    todo = (best if resend_hours else best[~best["event_id"].isin(pushed)]).sort_values("time")
+    todo = todo.head(50 if resend_hours else MAX_PER_RUN)
+    summ = summaries(set(todo["id"]))
     for r in todo.itertuples(index=False):
-        msg = fmt(r, nm)
+        msg = fmt(r, nm, summ)
         print(msg, "\n")
         if not dry:
             notify_discord.post(msg, webhook_url=webhook(), code_block=False)
@@ -97,11 +126,12 @@ def daily(dry: bool) -> int:
     today = pd.Timestamp.now().normalize()
     g = sc[sc["time"] >= today - pd.Timedelta(hours=10)]  # 前一晚 14:00 後 ~ 現在
     g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("event_id").head(DAILY_TOP)
-    lines = [f"📋 **{today:%m/%d} 新鮮度前 {len(g)} 名** (總分 = 事件分 + 市場分)"]
+    lines = [f"**{today:%Y-%m-%d} 當日總結（前 {len(g)} 名）**"]
     for r in g.itertuples(index=False):
-        m = "" if r.market_score != r.market_score else f"+{r.market_score:.0f}"
-        lines.append(f"`{r.score:>4.1f}` ({r.event_score:.1f}{m}) {r.direction or '－'} "
-                     f"{stock_label(r.stocks, nm) or r.source}｜{r.title[:48]}")
+        codes = [c for c in str(r.stocks).split(",") if c][:1]
+        code = codes[0] if codes else "－"
+        lines.append(f"{r.time:%Y-%m-%d %H:%M:%S} {code} {nm.get(code, '') if codes else ''} "
+                     f"{r.direction or '－'} {r.title[:50]}".replace("  ", " "))
     msg = "\n".join(lines)
     print(msg)
     if not dry and len(g):
@@ -113,5 +143,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["instant", "daily"], default="instant")
     ap.add_argument("--dry", action="store_true")
+    ap.add_argument("--resend-hours", type=int, default=0, help="重發最近 N 小時內達門檻的事件 (不看是否推過)")
     a = ap.parse_args()
-    sys.exit(instant(a.dry) if a.mode == "instant" else daily(a.dry))
+    sys.exit(instant(a.dry, a.resend_hours) if a.mode == "instant" else daily(a.dry))
