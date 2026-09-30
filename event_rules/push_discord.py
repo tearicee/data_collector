@@ -83,18 +83,13 @@ def summaries(ids: set) -> dict:
     return out
 
 
-def fmt(r, nm: dict, summ: dict) -> str:
-    """乾淨格式：日期時間 代號 名稱 多/空 標題，第二行摘要，第三行連結。"""
+def fmt(r, nm: dict, summ: dict | None = None) -> str:
+    """單行格式：日期時間 <分數> 代號 名稱 多/空 <標題> <連結>"""
     codes = [c for c in str(r.stocks).split(",") if c][:1]
     code = codes[0] if codes else "－"
-    name = nm.get(code, "") if codes else ""
-    line = f"{r.time:%Y-%m-%d %H:%M:%S} {code} {name} {r.direction or '－'} {r.title}".replace("  ", " ")
-    lines = [line]
-    if summ.get(r.id):
-        lines.append(summ[r.id])
-    if str(r.id).startswith("http"):
-        lines.append(f"<{r.id}>")
-    return "\n".join(lines)
+    name = nm.get(code, "") if codes else "－"
+    link = f" <{r.id}>" if str(r.id).startswith("http") else ""
+    return f"{r.time:%Y-%m-%d %H:%M:%S} <{r.event_score:.1f}> {code} {name} {r.direction or '－'} <{r.title}>{link}"
 
 
 def instant(dry: bool, resend_hours: int = 0) -> int:
@@ -107,9 +102,8 @@ def instant(dry: bool, resend_hours: int = 0) -> int:
     best = recent.sort_values("event_score", ascending=False).drop_duplicates("event_id")
     todo = (best if resend_hours else best[~best["event_id"].isin(pushed)]).sort_values("time")
     todo = todo.head(50 if resend_hours else MAX_PER_RUN)
-    summ = summaries(set(todo["id"]))
     for r in todo.itertuples(index=False):
-        msg = fmt(r, nm, summ)
+        msg = fmt(r, nm)
         print(msg, "\n")
         if not dry:
             notify_discord.post(msg, webhook_url=webhook(), code_block=False)
@@ -128,10 +122,7 @@ def daily(dry: bool) -> int:
     g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("event_id").head(DAILY_TOP)
     lines = [f"**{today:%Y-%m-%d} 當日總結（前 {len(g)} 名）**"]
     for r in g.itertuples(index=False):
-        codes = [c for c in str(r.stocks).split(",") if c][:1]
-        code = codes[0] if codes else "－"
-        lines.append(f"{r.time:%Y-%m-%d %H:%M:%S} {code} {nm.get(code, '') if codes else ''} "
-                     f"{r.direction or '－'} {r.title[:50]}".replace("  ", " "))
+        lines.append(fmt(r, nm).replace(f"<{r.event_score:.1f}>", f"<{r.score:.1f}>"))
     msg = "\n".join(lines)
     print(msg)
     if not dry and len(g):

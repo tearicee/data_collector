@@ -59,10 +59,14 @@ def stock_info() -> pd.DataFrame:
     return d.set_index("stock_id")
 
 
+DSL_RENAME = {"嗑曜集團": "上曜集團"}   # cp950 解碼時首字位元組錯位
+
+
 def parse_dsl() -> list:
     t = DSL.read_bytes().decode("cp950", "replace")
     out = []
     for name, _, codes in re.findall(r"([^\s,:;\x00-\x1f\ufffd]{1,20})(:{1,3}),((?:\d{4,6}[A-Z]?\.T[WE],)+)", t):
+        name = DSL_RENAME.get(name, name)
         out.append((name, [c.split(".")[0] for c in codes.strip(",").split(",")]))
     return out
 
