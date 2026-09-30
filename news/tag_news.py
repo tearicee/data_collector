@@ -28,7 +28,7 @@ TAGGED_DIR = store.BASE_DIR / "tagged"
 STOCK_INFO = "/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet"
 AMBIGUOUS = set("大陸 世界 數字 安心 全家 鳳凰 三星 東森 傳奇 互動 介面 建國 大中 大樹 天宇 乾坤 光譜 綠電 綠能 思源 永信 "
                 "國產 全新 大量 統一 精華 聯合 亞洲 中華 第一 新產 台灣 日友 巨大 櫻花 同協 長虹 富強 鼎新 優美 和立 新華 "
-                "力信 大同 華新 信義 太子 世紀 元山 普安 中聯 上奇 能率 高技 立康 百一 工信 順天 雙喜 佳總 青雲 金橋".split())
+                "再生 南港 中石化 台船 力信 大同 華新 信義 太子 世紀 元山 普安 中聯 上奇 能率 高技 立康 百一 工信 順天 雙喜 佳總 青雲 金橋".split())
 
 
 def load_names() -> dict:
@@ -43,6 +43,7 @@ def load_names() -> dict:
 
 
 NAMES = load_names()
+CODE_NAMES = {c: n for n, c in NAMES.items()}
 NAME_RE = re.compile("|".join(sorted(map(re.escape, NAMES), key=len, reverse=True))) if NAMES else None
 
 
@@ -66,8 +67,11 @@ def tag_month(path: Path) -> pd.DataFrame:
         t = tag_text(r.標題 or "", r.內文 or "", source="news")
         codes = [c for c in (r.個股代號 or "").split(",") if c]
         if not codes:
-            codes = list(dict.fromkeys(codes_from_names(r.標題, r.內文)
-                                       + CODE_RE.findall(f"{r.標題}\n{r.內文 or ''}")))[:8]
+            by_name = codes_from_names(r.標題, r.內文)
+            in_paren = [c for c in CODE_RE.findall(f"{r.標題}\n{r.內文 or ''}")
+                        if not ("2020" <= c <= "2030") or c in by_name or c in CODE_NAMES
+                        and CODE_NAMES[c] in (r.內文 or "")]   # (2026) 多半是年份，需公司名同時出現才算
+            codes = list(dict.fromkeys(by_name + in_paren))[:8]
         th = themes_of(r.標題 or "", r.內文 or "")
         rows.append({
             "themes": "|".join(th["all"]), "title_themes": "|".join(th["title"]),

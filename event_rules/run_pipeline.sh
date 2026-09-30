@@ -6,7 +6,8 @@
 #   3. 新聞標籤 (有變動的月份) news/tag_news.py --changed                      → news/tagged/新聞標籤_*.parquet
 #   4. 新鮮度評分        event_rules/freshness.py               → news/scored/新鮮度_*.parquet
 #                                                                + news/review/新鮮度檢視_YYYY-MM-DD.csv
-# cron：40 7,13,18,22 * * *  (早盤前、午盤、收盤後、晚間重訊高峰後)
+#   5. Discord 即時推播  event_rules/push_discord.py            → 事件分 ≥7 且未推過者
+# cron：*/20 7-23 * * *；另 14:05 (週一~五) push_discord.py --mode daily 當日總結
 # ============================================================
 DC_ROOT=/home/tearicee/data_collector
 PY="$DC_ROOT/.venv/bin/python"
@@ -24,6 +25,7 @@ cd "$DC_ROOT" || exit 1
         '$PY' material_info/extract_events.py | head -1
         '$PY' news/tag_news.py --changed
         '$PY' -m event_rules.freshness --review-days 3 --top 10
+        '$PY' event_rules/push_discord.py --mode instant | tail -1
     "
     rc=$?
     echo "==================== $(date '+%F %T') 結束 (rc=$rc) ===================="

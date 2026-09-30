@@ -15,7 +15,10 @@
     用語          首創 / 極端 / 轉折 / 意外 (+)、傳聞 (-)
     重量級對象、金額 (重訊)
     澄清立場      公司「否認」題材且股價先前已大漲 → 高分、方向偏空；制式否認不加分
-    自結數字      獲利年增 ≥100% 加分；單月 EPS 高於上季月均再加 (排除只是低基期)
+    自結數字      與「最近一期」比：同公司上月自結有公布 → 營收/獲利/EPS 月增率；
+                  沒有 → 單月×3 對上一季。變動 ≥20% 加分、≥50% 再加 (年增率只列參考)。
+                  仍虧損但股價續漲另外標註。只評重訊，新聞的自結報導不另評分。
+  事件合併        同一事件的多篇報導給同一個 event_id (見 assign_events)，檢視/推播只出現一次
   扣分            例行公告
 
 【第二階段 市場分 market_score】反應日收盤後才有 (13:30 前的事件看當日，之後看下一交易日)
@@ -62,17 +65,20 @@ WEIGHTS = {
     "mod_首創": 1.5, "mod_極端": 1.5, "mod_轉折": 1.0, "mod_意外": 0.5, "mod_傳聞": -1.0,
     "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
     "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
-    "selfreport_yoy": 1.0, "selfreport_above_q": 0.5,
+    "selfreport_chg": 1.5, "selfreport_chg_big": 2.5, "selfreport_loss_runup": 1.0, "multi_source": 0.5,
     "mkt_stock_limit": 2.0, "mkt_stock_big": 1.0, "mkt_theme_strong": 2.0, "mkt_theme_mild": 1.0, "mkt_cap": 3.0,
 }
 COMBO_RARE_MAX, TAG_RARE_MAX, AMOUNT_BIG = 3, 12, 5e9
 CROSS_SHARE_MAX, CROSS_MIN_SAMPLE = 0.03, 30       # 產業在題材新聞中的占比 <3% 視為跨界 (題材樣本需 ≥30)
+SELF_CHG, SELF_CHG_BIG = 20.0, 50.0                # 自結較最近一期變動幅度門檻 (%)
+NEWS_SKIP_TAGS = {"自結"}                          # 這些標籤只評重訊；新聞若只有這些標籤則不評分
+MERGE_HOURS, MERGE_SIM, MERGE_SIM_NUM = 36, 0.45, 0.25
 RUNUP_DAYS, RUNUP_PCT = 5, 15.0                    # 澄清前 5 個交易日漲幅 ≥15%
 FOCUS_MAX_STOCKS = 3                               # 題材新穎度只看「主角明確」的文章 (台股代號 ≤3 檔)
 BASKET_DAYS, BASKET_SIZE, BASKET_MIN = 180, 15, 3
 FX = {"TWD": 1, "USD": 32, "CNY": 4.4, "JPY": 0.21, "EUR": 35, "HKD": 4.1}
 # 彙整型文章 (盤前/盤後/週報/懶人包) 一篇帶十幾個主題，標籤與對象都不可靠 → 不評分也不計入歷史
-ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤"
+ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤|飆股出爐|排行榜|前\d+大|\d+大飆股|熱度爆棚"
 
 
 def _split(s) -> list:
@@ -206,13 +212,40 @@ def _basket(theme_stock: dict, theme: str, o: int) -> list:
     return [s for s, n in c.most_common(BASKET_SIZE) if n >= BASKET_MIN]
 
 
+def _selfreports(ev: pd.DataFrame) -> dict:
+    """(個股, 資料月份) → 自結數據，用來找「上個月的自結」。"""
+    out = {}
+    m = ev[(ev["source"] == "重訊") & ev["data"].str.contains('"自結"', na=False)]
+    for stock, data in zip(m["stocks"], m["data"]):
+        sr = json.loads(data).get("自結", {})
+        if sr.get("資料月份"):
+            out[(stock, sr["資料月份"])] = sr
+    return out
+
+
+def _self_change(sr: dict, prev: dict | None):
+    """回傳 (基準說明, {項目: 變動%}, 單月EPS)。prev 有值用月增；否則單月×3 對上一季。"""
+    items = {"營收": "營收", "母公司淨利": "獲利", "EPS": "EPS"}
+    chg = {}
+    for key, name in items.items():
+        cur = sr.get(f"{key}_最近一月")
+        base = prev.get(f"{key}_最近一月") if prev else (sr.get(f"{key}_最近一季") or 0) / 3
+        if cur is None or not base or base <= 0:   # 基期為負/零時增減率無意義
+            continue
+        chg[name] = round((cur / base - 1) * 100, 1)
+    return ("上月自結" if prev else "上一季月均"), chg, sr.get("EPS_最近一月")
+
+
 def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
     idx, theme_ind, theme_stock = _index(ev, mk)
+    selfs = _selfreports(ev)
     first_day = ev["day"].min().toordinal()
     W = WEIGHTS
     out = []
     for r in ev[ev["time"] >= pd.Timestamp(start)].itertuples(index=False):
         if not r.tag_list and not r.ttheme_list:
+            continue
+        if r.source != "重訊" and r.tag_list and set(r.tag_list) <= NEWS_SKIP_TAGS and not r.ttheme_list:
             continue
         o = r.day.toordinal()
         s, why, direction = W["base"], [], ""
@@ -277,15 +310,32 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             elif r.stance == "證實":
                 s += W["clarify_confirm"]; why.append(f"公司證實報導 +{W['clarify_confirm']}")
             sr = data.get("自結", {})
-            yoy = max((sr.get(k) or -1e9) for k in ("母公司淨利_月年增_pct", "EPS_月年增_pct"))
-            if 100 <= yoy < 100000:
-                s += W["selfreport_yoy"]; why.append(f"自結獲利年增 {yoy:.0f}% +{W['selfreport_yoy']}")
-                m_eps, q_eps = sr.get("EPS_最近一月"), sr.get("EPS_最近一季")
-                if m_eps and q_eps and q_eps > 0:
-                    if m_eps >= q_eps / 3:
-                        s += W["selfreport_above_q"]; why.append(f"單月 EPS {m_eps} 高於上季月均 {q_eps / 3:.2f} +{W['selfreport_above_q']}")
+            if sr.get("資料月份"):
+                ym = pd.Period(sr["資料月份"], "M")
+                basis, chg, m_eps = _self_change(sr, selfs.get((r.stocks, str(ym - 1))))
+                if chg and max(abs(x) for x in chg.values()) > 500:   # 多半是表格單位不一致造成的解析錯誤
+                    why.append("(自結數字變動異常大，疑似解析問題，未計分)")
+                elif chg:
+                    k, v = max(chg.items(), key=lambda x: abs(x[1]))
+                    detail = "、".join(f"{a}{b:+.0f}%" for a, b in chg.items())
+                    if abs(v) >= SELF_CHG_BIG:
+                        s += W["selfreport_chg_big"]; why.append(f"自結較{basis}：{detail} +{W['selfreport_chg_big']}")
+                    elif abs(v) >= SELF_CHG:
+                        s += W["selfreport_chg"]; why.append(f"自結較{basis}：{detail} +{W['selfreport_chg']}")
                     else:
-                        why.append(f"(單月 EPS {m_eps} 低於上季月均 {q_eps / 3:.2f}，年增主要來自低基期)")
+                        why.append(f"(自結較{basis}：{detail}，變動不大)")
+                    if not direction and abs(v) >= SELF_CHG:
+                        direction = "多" if v > 0 else "空"
+                yoy = sr.get("EPS_月年增_pct")
+                if yoy is not None and abs(yoy) < 1e5:
+                    why.append(f"(參考：EPS 年增 {yoy:.0f}%)")
+                if m_eps is not None and m_eps < 0:
+                    ru = mk.runup(r.time, r.stocks)
+                    if ru is not None and ru >= RUNUP_PCT:
+                        s += W["selfreport_loss_runup"]
+                        why.append(f"單月仍虧損 (EPS {m_eps}) 但股價近 {RUNUP_DAYS} 日漲 {ru}% +{W['selfreport_loss_runup']}")
+                    else:
+                        why.append(f"(單月仍虧損 EPS {m_eps})")
             if r.routine:
                 s += W["routine"]; why.append(f"例行公告 {W['routine']}")
         event_score = round(max(0, min(10, s)), 1)
@@ -333,6 +383,57 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
+def _bigrams(s: str) -> set:
+    s = "".join(ch for ch in s if ch.isalnum())
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _numbers(s: str) -> set:
+    import re
+    return {n.replace(",", "") for n in re.findall(r"\d[\d,]*\.?\d*", s) if len(n.replace(",", "")) >= 2}
+
+
+def assign_events(sc: pd.DataFrame) -> pd.DataFrame:
+    """把同一事件的多篇報導併成一個 event_id (寧可少併不錯併)。條件須同時成立：
+      1. 發布時間相差 ≤ MERGE_HOURS 小時
+      2. 主角相同：有共同台股代號；都沒有台股代號時須有共同對象類別
+      3. 標題相似：字元 bigram Jaccard ≥ MERGE_SIM；或兩邊標題有相同數字且相似度 ≥ MERGE_SIM_NUM
+    重訊不與重訊合併 (每則公告都是獨立事件)。只加欄位不刪資料。"""
+    sc = sc.sort_values("time").reset_index(drop=True)
+    feats = []
+    for r in sc.itertuples(index=False):
+        tw = {c for c in str(r.stocks).split(",") if c[:4].isdigit()}
+        feats.append((tw, set(_split(r.entities)), _bigrams(r.title), _numbers(r.title)))
+    eid = list(range(len(sc)))
+    window = pd.Timedelta(hours=MERGE_HOURS)
+    times, srcs = sc["time"].tolist(), sc["source"].tolist()
+    start = 0
+    for i in range(len(sc)):
+        while times[i] - times[start] > window:
+            start += 1
+        tw, ent, bg, num = feats[i]
+        if not bg:
+            continue
+        best, best_sim = None, 0.0
+        for j in range(start, i):
+            if srcs[i] == "重訊" and srcs[j] == "重訊":
+                continue
+            tw2, ent2, bg2, num2 = feats[j]
+            same_actor = bool(tw & tw2) if (tw or tw2) else bool(ent & ent2)
+            if not same_actor or not bg2:
+                continue
+            sim = len(bg & bg2) / len(bg | bg2)
+            if (sim >= MERGE_SIM or (num & num2 and sim >= MERGE_SIM_NUM)) and sim > best_sim:
+                best, best_sim = j, sim
+        if best is not None:
+            eid[i] = eid[best]
+    sc["event_id"] = [f"E{sc['time'].iloc[e]:%y%m%d}-{e}" for e in eid]
+    g = sc.groupby("event_id")
+    sc["n_reports"] = g["id"].transform("count")
+    sc["n_sources"] = g["source"].transform("nunique")
+    return sc
+
+
 def write_review(sc: pd.DataFrame, days: int) -> list:
     """每日檢視表：當日分數前 REVIEW_TOP 名 (同標題只留最高分)。已有人填過評價的檔不覆寫。"""
     REVIEW_DIR.mkdir(parents=True, exist_ok=True)
@@ -348,8 +449,9 @@ def write_review(sc: pd.DataFrame, days: int) -> list:
             old = pd.read_csv(path, dtype=str, keep_default_na=False)
             if "我的評價" in old and (old["我的評價"].str.strip() != "").any():
                 continue
-        g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("title").head(REVIEW_TOP)
+        g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("event_id").head(REVIEW_TOP)
         out = pd.DataFrame({
+            "報導數": g["n_reports"], "媒體數": g["n_sources"],
             "總分": g["score"], "我的評價": "", "事件分": g["event_score"], "市場分": g["market_score"],
             "階段": g["stage"], "方向": g["direction"], "時間": g["time"].dt.strftime("%m-%d %H:%M"),
             "來源": g["source"], "個股": g["stocks"].str[:40], "標題": g["title"], "事件標籤": g["tags"],
@@ -372,7 +474,7 @@ def main() -> int:
         a.start = str((first - pd.Timedelta(days=1)).replace(day=1).date())
     ev = load_events()
     mk = Market(pd.Timestamp(a.start))
-    sc = score(ev, a.start, mk)
+    sc = assign_events(score(ev, a.start, mk))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for ym, g in sc.groupby(sc["time"].dt.strftime("%Y-%m")):
         tmp = OUT_DIR / f"新鮮度_{ym}.parquet.tmp"
@@ -384,7 +486,7 @@ def main() -> int:
           f"股價至 {mk.days[-1].date()}")
     print(sc["score"].round().value_counts().sort_index().to_string())
     with pd.option_context("display.width", 250, "display.max_colwidth", 44, "display.unicode.east_asian_width", True):
-        top = sc.sort_values("score", ascending=False).drop_duplicates("title").head(a.top)
+        top = sc.sort_values("score", ascending=False).drop_duplicates("event_id").head(a.top)
         print(top[["time", "source", "stocks", "title", "score", "event_score", "market_score", "direction"]]
               .assign(stocks=top["stocks"].str[:14]).to_string(index=False))
     return 0
