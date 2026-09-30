@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-新鮮度評分 v1 (本地規則，不經 AI 模型)
+新鮮度評分 v2 (本地規則，不經 AI 模型) — 兩階段
 ================================================================
-把「重訊事件」與「新聞標籤」併成一張事件表，對每則事件算：
+把「重訊事件」與「新聞標籤」併成一張事件表，每則算兩個分數：
 
-  稀有度 (依事件類型，而非只看同公司)：
-    market_combo_days  過去 LOOKBACK 天內，「台股個股」出現相同「事件標籤 × 對象類別」的天數
-                       例：可轉債 × 美系巨頭 —— 過去一年台股沒有外資巨頭認購 CB → 0 → 高新鮮度
-                       只計「標題命中的標籤」且「有台股代號」的事件，避免美股新聞與內文順帶一提稀釋稀有度
-    market_tag_days    過去 LOOKBACK 天內，全市場出現相同事件標籤的天數 (此類事件本身常不常見)
-    stock_tag_days     過去 LOOKBACK 天內，同一檔個股出現相同事件標籤的天數
-  加分：首創/極端/轉折/意外 用語、重量級對象、金額
-  扣分：傳聞用語、例行/重發 (重訊)
+【第一階段 事件分 event_score】新聞/重訊一進來就能算
+  稀有度
+    標籤×對象     過去一年「台股個股」出現相同「事件標籤 × 對象類別」的天數 (輝達認購聯發科 ECB)
+    個股×題材     這檔個股過去一年是否曾與該題材一起出現 (首次共現)
+    產業×題材     該題材的新聞裡，這個產業的個股占比極低 → 跨界 (鋼鐵廠切入半導體)
+    個股×標籤     這檔個股一年內首次出現此類事件
+  內容
+    用語          首創 / 極端 / 轉折 / 意外 (+)、傳聞 (-)
+    重量級對象、金額 (重訊)
+    澄清立場      公司「否認」題材且股價先前已大漲 → 高分、方向偏空；制式否認不加分
+    自結數字      獲利年增 ≥100% 加分；單月 EPS 高於上季月均再加 (排除只是低基期)
+  扣分            例行公告
 
-score 0~10；reasons 欄列出每一項加減分，方便調整權重 (改 WEIGHTS 即可)。
-歷史不足 HISTORY_MIN_DAYS 天的事件標 history_ok=False (稀有度不可靠)。
+【第二階段 市場分 market_score】反應日收盤後才有 (13:30 前的事件看當日，之後看下一交易日)
+    個股反應      事件個股當日漲跌幅 (漲跌停 / ≥5%)
+    題材反應      題材概念股 (過去半年最常與該題材一起出現的個股) 當日漲跌幅中位數
+
+score = min(10, event_score + market_score)；stage 欄標明「事件」或「含市場反應」。
+每一項加減分都寫在 reasons / market_reason，權重集中在 WEIGHTS。
 
 輸出：/mnt/d/mops/news/scored/新鮮度_YYYY-MM.parquet
-     + /mnt/d/mops/news/review/新鮮度檢視_YYYY-MM-DD.csv (每日前 N 名，Excel 可開；
-       「我的評價」欄留白供人工標記 該高分/雜訊，回饋用來調規則)
+     /mnt/d/mops/news/review/新鮮度檢視_YYYY-MM-DD.csv (每日前 N 名；「我的評價」欄供人工回饋)
 用法：python -m event_rules.freshness [--start 2026-09-01] [--top 30] [--review-days 3]
       未給 --start 時從上個月 1 日起算 (月檔整月覆寫，start 必須是月初)
 """
@@ -28,13 +35,15 @@ import bisect
 import glob
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pandas as pd
 
 MOPS_EVENTS = "/mnt/d/mops/material_info/derived/重訊事件_*.parquet"
 NEWS_TAGGED = "/mnt/d/mops/news/tagged/新聞標籤_*.parquet"
+PRICE_GLOB = "/mnt/d/finmind_data/TaiwanStockPrice/*/TaiwanStockPrice_*.parquet"
+INDUSTRY_GLOB = "/mnt/d/mops/MopsIndustry/*/MopsIndustry_*.parquet"
 OUT_DIR = Path("/mnt/d/mops/news/scored")
 REVIEW_DIR = Path("/mnt/d/mops/news/review")
 REVIEW_TOP = 60
@@ -48,15 +57,26 @@ WEIGHTS = {
     "combo_never": 3.0, "combo_rare": 1.5,        # 標籤×對象類別：0 天 / ≤3 天
     "tag_rare_market": 1.0,                        # 該事件類型全市場 ≤12 天/年
     "stock_first": 1.0,                            # 該個股一年內首次出現此類事件
+    "theme_first": 1.5,                            # 個股×題材 首次共現
+    "theme_cross": 3.0,                            # 產業×題材 罕見 (跨界)，與 theme_first 疊加
     "mod_首創": 1.5, "mod_極端": 1.5, "mod_轉折": 1.0, "mod_意外": 0.5, "mod_傳聞": -1.0,
-    "entity": 1.0,                                 # 有重量級對象
-    "amount_big": 1.0,                             # 金額 ≥ 50 億元 (重訊)
-    "routine": -3.0, "mops_source": 0.5,           # 例行公告扣分；公司正式公告比報導可靠
+    "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
+    "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
+    "selfreport_yoy": 1.0, "selfreport_above_q": 0.5,
+    "mkt_stock_limit": 2.0, "mkt_stock_big": 1.0, "mkt_theme_strong": 2.0, "mkt_theme_mild": 1.0, "mkt_cap": 3.0,
 }
 COMBO_RARE_MAX, TAG_RARE_MAX, AMOUNT_BIG = 3, 12, 5e9
-# 彙整型文章 (盤前/盤後/週報/懶人包) 一篇帶十幾個主題，標籤與對象都不可靠 → 不評分也不計入歷史
-ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點"
+CROSS_SHARE_MAX, CROSS_MIN_SAMPLE = 0.03, 30       # 產業在題材新聞中的占比 <3% 視為跨界 (題材樣本需 ≥30)
+RUNUP_DAYS, RUNUP_PCT = 5, 15.0                    # 澄清前 5 個交易日漲幅 ≥15%
+FOCUS_MAX_STOCKS = 3                               # 題材新穎度只看「主角明確」的文章 (台股代號 ≤3 檔)
+BASKET_DAYS, BASKET_SIZE, BASKET_MIN = 180, 15, 3
 FX = {"TWD": 1, "USD": 32, "CNY": 4.4, "JPY": 0.21, "EUR": 35, "HKD": 4.1}
+# 彙整型文章 (盤前/盤後/週報/懶人包) 一篇帶十幾個主題，標籤與對象都不可靠 → 不評分也不計入歷史
+ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤"
+
+
+def _split(s) -> list:
+    return [x for x in str(s or "").split("|") if x]
 
 
 def load_events() -> pd.DataFrame:
@@ -67,8 +87,9 @@ def load_events() -> pd.DataFrame:
         m = m[m["filter_label"] != "repeat"]
         parts.append(pd.DataFrame({
             "source": "重訊", "id": m["MOPS鍵"], "time": m["發布時間"], "title": m["主旨"],
-            "stocks": m["公司代號"], "tags": m["tags"], "title_tags": m["tags"], "modifiers": m["modifiers"], "entities": m["entities"],
-            "routine": m["filter_label"] == "routine",
+            "stocks": m["公司代號"], "tags": m["tags"], "title_tags": m["tags"], "modifiers": m["modifiers"],
+            "entities": m["entities"], "themes": m["themes"], "title_themes": m["title_themes"],
+            "routine": m["filter_label"] == "routine", "stance": m["澄清立場"], "data": m["數據"],
             "amount_twd": m["金額_元"] * m["幣別"].map(FX).fillna(1),
         }))
     files = sorted(glob.glob(NEWS_TAGGED))
@@ -76,13 +97,18 @@ def load_events() -> pd.DataFrame:
         n = pd.concat(pd.read_parquet(f) for f in files)
         parts.append(pd.DataFrame({
             "source": n["來源"], "id": n["連結"], "time": n["發布時間"], "title": n["標題"],
-            "stocks": n["個股代號"], "tags": n["tags"], "title_tags": n["title_tags"], "modifiers": n["modifiers"], "entities": n["entities"],
-            "routine": False, "amount_twd": float("nan"),
+            "stocks": n["個股代號"], "tags": n["tags"], "title_tags": n["title_tags"], "modifiers": n["modifiers"],
+            "entities": n["entities"], "themes": n["themes"], "title_themes": n["title_themes"],
+            "routine": False, "stance": "", "data": "", "amount_twd": float("nan"),
         }))
     ev = pd.concat(parts, ignore_index=True).sort_values("time").reset_index(drop=True)
     ev = ev[~ev["title"].str.contains(ROUNDUP_RE, na=False)].reset_index(drop=True)
     ev["day"] = ev["time"].dt.normalize()
-    ev["tag_list"] = ev["tags"].map(lambda s: [t for t in s.split("|") if t and t not in LOW_TAGS])
+    ev["tag_list"] = ev["tags"].map(lambda s: [t for t in _split(s) if t not in LOW_TAGS])
+    ev["ttag_list"] = ev["title_tags"].map(lambda s: [t for t in _split(s) if t not in LOW_TAGS])
+    ev["theme_list"] = ev["themes"].map(_split)
+    ev["ttheme_list"] = ev["title_themes"].map(_split)
+
     # 對象類別：新聞只認「標題裡出現」的 (內文提到不算主角)；重訊排除台系龍頭 (多半是公司自己)
     def ents(src, title, s):
         if not s:
@@ -93,26 +119,81 @@ def load_events() -> pd.DataFrame:
         return sorted(k for k, names in d.items() if any(n in title for n in names))
     ev["ent_list"] = [ents(a, b or "", c) for a, b, c in zip(ev["source"], ev["title"], ev["entities"])]
     ev["stock_list"] = ev["stocks"].map(lambda s: [c for c in str(s).split(",") if c])
-    ev["ttag_list"] = ev["title_tags"].map(lambda s: [t for t in s.split("|") if t and t not in LOW_TAGS])
-    ev["tw"] = ev["stock_list"].map(lambda l: any(c[:4].isdigit() for c in l))
+    ev["tw_list"] = ev["stock_list"].map(lambda l: [c for c in l if c[:4].isdigit() and not c.startswith("00")])
+    ev["tw"] = ev["tw_list"].map(bool)
     return ev
 
 
-def _index(ev: pd.DataFrame) -> dict:
-    """key → 已排序的「出現日」(day ordinal) 清單。key 有三種：tag、(tag,對象類別)、(個股,tag)。"""
+class Market:
+    """股價 (漲跌幅、收盤) 與產業類別。"""
+
+    def __init__(self, since: pd.Timestamp):
+        files = [f for f in sorted(glob.glob(PRICE_GLOB)) if f[-18:-8] >= str((since - pd.Timedelta(days=20)).date())]
+        px = pd.concat(pd.read_parquet(f, columns=["date", "stock_id", "close", "spread"]) for f in files)
+        px["date"] = pd.to_datetime(px["date"])
+        prev = px["close"] - px["spread"]
+        px["pct"] = (px["spread"] / prev.where(prev > 0) * 100).round(2)
+        self.pct = px.pivot_table(index="date", columns="stock_id", values="pct", aggfunc="last")
+        self.close = px.pivot_table(index="date", columns="stock_id", values="close", aggfunc="last")
+        self.days = list(self.pct.index)
+        f = sorted(glob.glob(INDUSTRY_GLOB))
+        ind = pd.read_parquet(f[-1]) if f else pd.DataFrame(columns=["stock_id", "category"])
+        self.industry = dict(zip(ind["stock_id"].astype(str), ind["category"]))
+
+    def reaction_day(self, t: pd.Timestamp):
+        """13:30 前的事件 → 當日 (若為交易日)；否則下一個交易日。尚無資料回 None。"""
+        d = t.normalize()
+        i = bisect.bisect_left(self.days, d)
+        if i < len(self.days) and self.days[i] == d and (t.hour, t.minute) < (13, 30):
+            return d
+        j = bisect.bisect_right(self.days, d)
+        return self.days[j] if j < len(self.days) else None
+
+    def pct_on(self, day, stock):
+        try:
+            v = self.pct.at[day, stock]
+            return None if v != v else float(v)
+        except KeyError:
+            return None
+
+    def runup(self, t: pd.Timestamp, stock: str):
+        """事件當下為止 RUNUP_DAYS 個交易日的累計漲幅 (%)。"""
+        if stock not in self.close.columns:
+            return None
+        cutoff = t.normalize() if (t.hour, t.minute) >= (13, 30) else t.normalize() - pd.Timedelta(days=1)
+        s = self.close[stock].dropna()
+        s = s[s.index <= cutoff]
+        if len(s) <= RUNUP_DAYS:
+            return None
+        return round((s.iloc[-1] / s.iloc[-1 - RUNUP_DAYS] - 1) * 100, 1)
+
+
+def _index(ev: pd.DataFrame, mk: Market):
+    """key → 已排序的出現日。另回傳 題材→產業 計數 (跨界判斷) 與 題材→[(日, 個股)] (概念股籃)。"""
     days = defaultdict(set)
-    for d, tags, ttags, ents, stocks, tw in zip(ev["day"], ev["tag_list"], ev["ttag_list"], ev["ent_list"],
-                                                ev["stock_list"], ev["tw"]):
+    theme_ind = defaultdict(Counter)
+    theme_stock = defaultdict(list)
+    for d, tags, ttags, ents, stocks, tw, themes, tthemes in zip(
+            ev["day"], ev["tag_list"], ev["ttag_list"], ev["ent_list"], ev["stock_list"], ev["tw_list"],
+            ev["theme_list"], ev["ttheme_list"]):
         o = d.toordinal()
         for t in tags:
             for s in stocks:
                 days[("S", s, t)].add(o)
-        if tw:  # 稀有度只看台股事件、且標籤須出現在標題/主旨
-            for t in ttags:
+        for s in tw:
+            for th in themes:                      # 個股×題材：內文提過也算「出現過」
+                days[("T", s, th)].add(o)
+        if tw:
+            for t in ttags:                        # 標籤稀有度：只看台股事件、標籤須在標題/主旨
                 days[t].add(o)
                 for e in ents:
                     days[(t, e)].add(o)
-    return {k: sorted(v) for k, v in days.items()}
+            if len(tw) <= FOCUS_MAX_STOCKS:
+                for th in tthemes:
+                    for s in tw:
+                        theme_ind[th][mk.industry.get(s, "")] += 1
+                        theme_stock[th].append((o, s))
+    return {k: sorted(v) for k, v in days.items()}, theme_ind, theme_stock
 
 
 def _prior(idx: dict, key, o: int) -> int:
@@ -120,51 +201,140 @@ def _prior(idx: dict, key, o: int) -> int:
     return bisect.bisect_left(lst, o) - bisect.bisect_left(lst, o - LOOKBACK)
 
 
-def score(ev: pd.DataFrame, start: str) -> pd.DataFrame:
-    idx = _index(ev)
+def _basket(theme_stock: dict, theme: str, o: int) -> list:
+    c = Counter(s for d, s in theme_stock.get(theme, []) if o - BASKET_DAYS <= d < o)
+    return [s for s, n in c.most_common(BASKET_SIZE) if n >= BASKET_MIN]
+
+
+def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
+    idx, theme_ind, theme_stock = _index(ev, mk)
     first_day = ev["day"].min().toordinal()
     W = WEIGHTS
     out = []
     for r in ev[ev["time"] >= pd.Timestamp(start)].itertuples(index=False):
-        if not r.tag_list:
+        if not r.tag_list and not r.ttheme_list:
             continue
         o = r.day.toordinal()
-        s, why = W["base"], []
+        s, why, direction = W["base"], [], ""
+
+        # ---- 稀有度：標籤×對象、標籤、個股×標籤
         ttags = r.ttag_list if r.tw else []
         combos = [(t, e, _prior(idx, (t, e), o)) for t in ttags for e in r.ent_list]
-        tag_days = {t: _prior(idx, t, o) for t in (ttags or r.tag_list)}
-        stock_days = [_prior(idx, ("S", c, t), o) for c in r.stock_list for t in r.tag_list]
         if combos:
             t, e, n = min(combos, key=lambda x: x[2])
             if n == 0:
                 s += W["combo_never"]; why.append(f"「{t}×{e}」過去一年未出現 +{W['combo_never']}")
             elif n <= COMBO_RARE_MAX:
                 s += W["combo_rare"]; why.append(f"「{t}×{e}」過去一年僅 {n} 天 +{W['combo_rare']}")
+        if r.ent_list:
             s += W["entity"]; why.append(f"重量級對象 {'/'.join(r.ent_list)} +{W['entity']}")
-        t, n = min(tag_days.items(), key=lambda x: x[1])
-        if n <= TAG_RARE_MAX:
-            s += W["tag_rare_market"]; why.append(f"「{t}」全市場過去一年僅 {n} 天 +{W['tag_rare_market']}")
+        tag_days = {t: _prior(idx, t, o) for t in (ttags or r.tag_list)}
+        if tag_days:
+            t, n = min(tag_days.items(), key=lambda x: x[1])
+            if n <= TAG_RARE_MAX and r.tw:
+                s += W["tag_rare_market"]; why.append(f"「{t}」全市場過去一年僅 {n} 天 +{W['tag_rare_market']}")
+        stock_days = [_prior(idx, ("S", c, t), o) for c in r.stock_list for t in r.tag_list]
         if stock_days and min(stock_days) == 0:
             s += W["stock_first"]; why.append(f"該個股一年內首見此類事件 +{W['stock_first']}")
-        for m in [x for x in r.modifiers.split("|") if x]:
+
+        # ---- 題材新穎度：個股×題材首次共現、產業×題材跨界 (主角明確的文章才算)
+        if r.ttheme_list and 0 < len(r.tw_list) <= FOCUS_MAX_STOCKS:
+            best = None
+            for c in r.tw_list:
+                ind = mk.industry.get(c, "")
+                for th in r.ttheme_list:
+                    if _prior(idx, ("T", c, th), o) > 0:
+                        continue
+                    total = sum(theme_ind[th].values())
+                    share = theme_ind[th][ind] / total if total else 1
+                    cross = bool(ind) and total >= CROSS_MIN_SAMPLE and share < CROSS_SHARE_MAX
+                    if best is None or cross > best[3]:
+                        best = (c, th, ind, cross, share)
+            if best:
+                c, th, ind, cross, share = best
+                s += W["theme_first"]; why.append(f"{c} 首次與「{th}」題材一起出現 +{W['theme_first']}")
+                if cross:
+                    s += W["theme_cross"]
+                    why.append(f"跨界：{ind}在「{th}」新聞中僅占 {share:.1%} +{W['theme_cross']}")
+
+        # ---- 用語、金額
+        for m in _split(r.modifiers):
             s += W[f"mod_{m}"]; why.append(f"{m}用語 {W[f'mod_{m}']:+}")
         if r.amount_twd == r.amount_twd and r.amount_twd >= AMOUNT_BIG:
             s += W["amount_big"]; why.append(f"金額約 {r.amount_twd / 1e8:,.0f} 億 +{W['amount_big']}")
+
+        # ---- 重訊專屬：澄清立場、自結數字、例行
         if r.source == "重訊":
             s += W["mops_source"]
+            data = json.loads(r.data) if r.data else {}
+            if r.stance == "否認":
+                ru = mk.runup(r.time, r.stocks)
+                if ru is not None and ru >= RUNUP_PCT:
+                    s += W["clarify_deny_runup"]; direction = "空"
+                    why.append(f"公司否認題材，且股價近 {RUNUP_DAYS} 日已漲 {ru}% +{W['clarify_deny_runup']}")
+                else:
+                    s += W["clarify_deny"]; why.append(f"公司否認報導 +{W['clarify_deny']}")
+            elif r.stance == "證實":
+                s += W["clarify_confirm"]; why.append(f"公司證實報導 +{W['clarify_confirm']}")
+            sr = data.get("自結", {})
+            yoy = max((sr.get(k) or -1e9) for k in ("母公司淨利_月年增_pct", "EPS_月年增_pct"))
+            if 100 <= yoy < 100000:
+                s += W["selfreport_yoy"]; why.append(f"自結獲利年增 {yoy:.0f}% +{W['selfreport_yoy']}")
+                m_eps, q_eps = sr.get("EPS_最近一月"), sr.get("EPS_最近一季")
+                if m_eps and q_eps and q_eps > 0:
+                    if m_eps >= q_eps / 3:
+                        s += W["selfreport_above_q"]; why.append(f"單月 EPS {m_eps} 高於上季月均 {q_eps / 3:.2f} +{W['selfreport_above_q']}")
+                    else:
+                        why.append(f"(單月 EPS {m_eps} 低於上季月均 {q_eps / 3:.2f}，年增主要來自低基期)")
             if r.routine:
                 s += W["routine"]; why.append(f"例行公告 {W['routine']}")
+        event_score = round(max(0, min(10, s)), 1)
+
+        # ---- 第二階段：市場反應
+        mscore, mwhy, rday = None, [], mk.reaction_day(r.time)
+        if rday is not None:
+            mscore = 0.0
+            moves = [(c, mk.pct_on(rday, c)) for c in r.tw_list[:5]]
+            moves = [(c, p) for c, p in moves if p is not None]
+            if moves:
+                c, p = max(moves, key=lambda x: abs(x[1]))
+                if abs(p) >= 9.5:
+                    mscore += W["mkt_stock_limit"]; mwhy.append(f"{c} {p:+.1f}% (漲跌停) +{W['mkt_stock_limit']}")
+                elif abs(p) >= 5:
+                    mscore += W["mkt_stock_big"]; mwhy.append(f"{c} {p:+.1f}% +{W['mkt_stock_big']}")
+                if not direction and abs(p) >= 5:
+                    direction = "多" if p > 0 else "空"
+            best = None
+            for th in r.ttheme_list:
+                ps = [mk.pct_on(rday, c) for c in _basket(theme_stock, th, o)]
+                ps = sorted(p for p in ps if p is not None)
+                if len(ps) >= 5:
+                    med = ps[len(ps) // 2]
+                    if best is None or abs(med) > abs(best[1]):
+                        best = (th, med, len(ps))
+            if best:
+                th, med, n = best
+                if abs(med) >= 3:
+                    mscore += W["mkt_theme_strong"]; mwhy.append(f"「{th}」概念股 {n} 檔中位數 {med:+.1f}% +{W['mkt_theme_strong']}")
+                elif abs(med) >= 1.5:
+                    mscore += W["mkt_theme_mild"]; mwhy.append(f"「{th}」概念股 {n} 檔中位數 {med:+.1f}% +{W['mkt_theme_mild']}")
+                if not direction and abs(med) >= 1.5:
+                    direction = "多" if med > 0 else "空"
+            mscore = min(W["mkt_cap"], mscore)
+        total = round(min(10, event_score + (mscore or 0)), 1)
         out.append({
-            "time": r.time, "source": r.source, "stocks": r.stocks, "title": r.title, "tags": "|".join(r.tag_list),
-            "modifiers": r.modifiers, "entities": "|".join(r.ent_list), "score": round(max(0, min(10, s)), 1),
-            "reasons": "；".join(why), "min_combo_days": min((c[2] for c in combos), default=None),
-            "min_tag_days": n, "history_ok": o - first_day >= HISTORY_MIN_DAYS, "id": r.id,
+            "time": r.time, "source": r.source, "stocks": r.stocks, "title": r.title,
+            "score": total, "event_score": event_score, "market_score": mscore,
+            "stage": "事件" if mscore is None else "含市場反應", "direction": direction,
+            "tags": "|".join(r.tag_list), "themes": "|".join(r.ttheme_list), "modifiers": r.modifiers,
+            "entities": "|".join(r.ent_list), "reasons": "；".join(why), "market_reason": "；".join(mwhy),
+            "reaction_day": rday, "history_ok": o - first_day >= HISTORY_MIN_DAYS, "id": r.id,
         })
     return pd.DataFrame(out)
 
 
 def write_review(sc: pd.DataFrame, days: int) -> list:
-    """每日檢視表：當日分數前 REVIEW_TOP 名 (同標題只留最高分)。已存在且有人填過評價的檔不覆寫。"""
+    """每日檢視表：當日分數前 REVIEW_TOP 名 (同標題只留最高分)。已有人填過評價的檔不覆寫。"""
     REVIEW_DIR.mkdir(parents=True, exist_ok=True)
     written = []
     last = sc["time"].max().normalize()
@@ -178,11 +348,13 @@ def write_review(sc: pd.DataFrame, days: int) -> list:
             old = pd.read_csv(path, dtype=str, keep_default_na=False)
             if "我的評價" in old and (old["我的評價"].str.strip() != "").any():
                 continue
-        g = g.sort_values("score", ascending=False).drop_duplicates("title").head(REVIEW_TOP)
+        g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("title").head(REVIEW_TOP)
         out = pd.DataFrame({
-            "分數": g["score"], "我的評價": "", "時間": g["time"].dt.strftime("%m-%d %H:%M"), "來源": g["source"],
-            "個股": g["stocks"].str[:40], "標題": g["title"], "事件標籤": g["tags"], "用語": g["modifiers"],
-            "對象": g["entities"], "評分理由": g["reasons"], "連結或MOPS鍵": g["id"],
+            "總分": g["score"], "我的評價": "", "事件分": g["event_score"], "市場分": g["market_score"],
+            "階段": g["stage"], "方向": g["direction"], "時間": g["time"].dt.strftime("%m-%d %H:%M"),
+            "來源": g["source"], "個股": g["stocks"].str[:40], "標題": g["title"], "事件標籤": g["tags"],
+            "題材": g["themes"], "用語": g["modifiers"], "對象": g["entities"], "事件分理由": g["reasons"],
+            "市場分理由": g["market_reason"], "連結或MOPS鍵": g["id"],
         })
         out.to_csv(path, index=False, encoding="utf-8-sig")
         written.append(path.name)
@@ -199,7 +371,8 @@ def main() -> int:
         first = pd.Timestamp.today().normalize().replace(day=1)
         a.start = str((first - pd.Timedelta(days=1)).replace(day=1).date())
     ev = load_events()
-    sc = score(ev, a.start)
+    mk = Market(pd.Timestamp(a.start))
+    sc = score(ev, a.start, mk)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for ym, g in sc.groupby(sc["time"].dt.strftime("%Y-%m")):
         tmp = OUT_DIR / f"新鮮度_{ym}.parquet.tmp"
@@ -207,11 +380,13 @@ def main() -> int:
         tmp.replace(OUT_DIR / f"新鮮度_{ym}.parquet")
     if a.review_days:
         print("檢視表：", write_review(sc, a.review_days))
-    print(f"事件表 {len(ev):,} 筆 ({ev['day'].min().date()}~{ev['day'].max().date()})；評分 {len(sc):,} 筆")
+    print(f"事件表 {len(ev):,} 筆 ({ev['day'].min().date()}~{ev['day'].max().date()})；評分 {len(sc):,} 筆；"
+          f"股價至 {mk.days[-1].date()}")
     print(sc["score"].round().value_counts().sort_index().to_string())
-    with pd.option_context("display.width", 250, "display.max_colwidth", 46, "display.unicode.east_asian_width", True):
+    with pd.option_context("display.width", 250, "display.max_colwidth", 44, "display.unicode.east_asian_width", True):
         top = sc.sort_values("score", ascending=False).drop_duplicates("title").head(a.top)
-        print(top[["time", "source", "stocks", "title", "score", "tags", "entities"]].to_string(index=False))
+        print(top[["time", "source", "stocks", "title", "score", "event_score", "market_score", "direction"]]
+              .assign(stocks=top["stocks"].str[:14]).to_string(index=False))
     return 0
 
 

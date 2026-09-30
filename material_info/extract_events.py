@@ -27,7 +27,7 @@ sys.path.insert(0, str(HERE.parent))
 import filter_material_info as fmi  # noqa: E402
 import store  # noqa: E402
 from event_rules import numparse as N  # noqa: E402
-from event_rules.rules import tag_text  # noqa: E402
+from event_rules.rules import clarification_stance, tag_text, themes_of  # noqa: E402
 
 FIELD_RE = re.compile(r"(?m)^\s*(\d{1,2})[\.、]\s*([^:：\n]{2,60}?)\s*[:：]")
 NA_RE = re.compile(r"^\s*(不適用|無|NA|N/A|none|尚未|待定)[。.]?\s*$", re.I)
@@ -232,7 +232,15 @@ def build() -> pd.DataFrame:
                     data[tag] = got
                     if main and amount is None and got.get(main):
                         amount, cur = got[main], got.get(main + "_幣別", "TWD")
+        stance = ""
+        if "澄清" in t["tags"]:  # 立場寫在「因應措施」，被澄清的內容寫在「報導內容」
+            answer = pick(fields, "因應措施", "發生緣由")
+            stance = clarification_stance(answer)
+            data["澄清"] = {"媒體": pick(fields, "傳播媒體名稱")[:40], "報導內容": pick(fields, "報導內容")[:300],
+                            "公司說明": answer[:300], "立場": stance}
+        th = themes_of(r.主旨 or "", body)
         rows.append({
+            "themes": "|".join(th["title"]), "title_themes": "|".join(th["title"]), "澄清立場": stance,
             "MOPS鍵": r.MOPS鍵, "公司代號": r.公司代號, "公司簡稱": r.公司簡稱, "市場別": r.市場別,
             "發布時間": r.發布時間, "發言日期": r.發言日期, "主旨": r.主旨,
             "filter_label": r.filter_label, "action_stage": r.action_stage,

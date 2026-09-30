@@ -9,6 +9,8 @@
       個股代號 (market[].code)、關鍵字。
   - RSS：經濟日報 (產業/股市/國際)、科技新報、工商時報 (證券/產業/科技/政策/金融/兩岸)
       另有自由財經、中央社 (財經/產經)、MoneyDJ。
+  - 聯合新聞網 udn.com (產經/股市；個股情報在這裡，不在 money.udn.com)：RSS 壞掉 (標題空白)，
+      改用列表 API udn.com/api/more?type=cate_latest_news&cate_id=6644|6645，每頁 6 則往回翻。
       RSS 只有最近的文章且只給摘要 → 新連結逐篇抓原文頁取完整內文 (BODY_XPATH)；
       抓不到時保留摘要，--mode fulltext 可事後補抓。
 
@@ -56,7 +58,11 @@ RSS_FEEDS = [
     ("中央社", "產經", "https://feeds.feedburner.com/rsscna/technology"),
     ("MoneyDJ", "新聞", "https://www.moneydj.com/kmdj/RssCenter.aspx?svc=NR&fno=1&arg=MB010000"),
 ]
+UDN_API = "https://udn.com/api/more"
+UDN_CATES = {"6644": "產經", "6645": "股市"}
+UDN_MAX_PAGES = 25
 BODY_XPATH = {  # 原文頁的內文段落
+    "聯合新聞網": "//section[contains(@class,'article-content__editor')]//p",
     "經濟日報": "//section[contains(@class,'article-body__editor')]//p",
     "科技新報": "//div[contains(@class,'indent')]//p",
     "工商時報": "//article//p",
@@ -200,6 +206,45 @@ def rss_rows(source: str, cat: str, url: str, since: datetime) -> list:
     return rows
 
 
+def udn_rows(cate: str, since: datetime) -> list:
+    """聯合新聞網列表 API：由新到舊翻頁，翻到早於 since 或連結全部已存為止。"""
+    rows = []
+    for page in range(1, UDN_MAX_PAGES + 1):
+        time.sleep(random.uniform(*SLEEP))
+        lists = get(UDN_API, params={"page": page, "channelId": 2, "type": "cate_latest_news",
+                                     "cate_id": cate, "totalRecNo": 200},
+                    headers={"Referer": f"https://udn.com/news/cate/2/{cate}"}).json().get("lists") or []
+        if not lists:
+            break
+        old = 0
+        for it in lists:
+            pub = datetime.strptime(it["time"]["date"], "%Y-%m-%d %H:%M")
+            if pub < since:
+                old += 1
+                continue
+            rows.append({
+                "發布時間": pub.strftime("%Y-%m-%d %H:%M:%S"), "來源": "聯合新聞網", "分類": UDN_CATES[cate],
+                "標題": clean_html(it.get("title")), "摘要": clean_html(it.get("paragraph")),
+                "內文": clean_html(it.get("paragraph")),
+                "連結": "https://udn.com" + clean_link(it["titleLink"]), "個股代號": "", "關鍵字": "",
+                "抓取時間": ts(),
+            })
+        if old == len(lists):
+            break
+    return rows
+
+
+def with_fulltext(source: str, rows: list) -> list:
+    """濾掉已存連結，其餘逐篇抓完整內文。"""
+    have = set().union(*(store.existing_links(ym) for ym in {r["發布時間"][:7] for r in rows})) if rows else set()
+    rows = [r for r in rows if r["連結"] not in have]
+    for r in rows:
+        body = fetch_body(source, r["連結"])
+        if len(body) > len(r["內文"]):
+            r["內文"] = body
+    return rows
+
+
 # ------------------------------------------------------------------ 模式
 def poll(hours: int) -> int:
     now = datetime.now()
@@ -213,21 +258,21 @@ def poll(hours: int) -> int:
             errors.append(f"鉅亨-{cat}: {e}")
     for source, cat, url in RSS_FEEDS:
         try:
-            rows = rss_rows(source, cat, url, since)
-            have = set().union(*(store.existing_links(ym) for ym in {r["發布時間"][:7] for r in rows}))
-            rows = [r for r in rows if r["連結"] not in have]
-            for r in rows:  # 只對新連結抓完整內文
-                body = fetch_body(source, r["連結"])
-                if len(body) > len(r["內文"]):
-                    r["內文"] = body
+            rows = with_fulltext(source, rss_rows(source, cat, url, since))
             stats[f"{source}-{cat}"] = (len(rows), store.upsert(rows))
         except Exception as e:  # noqa: BLE001
             errors.append(f"{source}-{cat}: {e}")
+    for cate, name in UDN_CATES.items():
+        try:
+            rows = with_fulltext("聯合新聞網", udn_rows(cate, since))
+            stats[f"聯合新聞網-{name}"] = (len(rows), store.upsert(rows))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"聯合新聞網-{name}: {e}")
     new = sum(v[1] for v in stats.values())
     log("poll " + " ".join(f"{k}={a}/{n}新" for k, (a, n) in stats.items()) + f" 合計新增 {new}")
     for e in errors:
         log(f"  [ERROR] {e}")
-    ok = len(errors) < len(CNYES_CATS) + len(RSS_FEEDS)  # 全部來源都失敗才算失敗
+    ok = len(errors) < len(CNYES_CATS) + len(RSS_FEEDS) + len(UDN_CATES)  # 全部來源都失敗才算失敗
     heartbeat.write("news_poll", heartbeat.STATUS_OK if ok else heartbeat.STATUS_FAIL,
                     0 if ok else 1, f"新增 {new}",
                     stats={"new": new, "failed": [e.split(":")[0] for e in errors]})
