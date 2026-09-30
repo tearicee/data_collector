@@ -5,7 +5,9 @@
   讀 D:/mops/news/data/新聞_YYYY-MM.parquet → 寫 D:/mops/news/tagged/新聞標籤_YYYY-MM.parquet
   欄位：連結、發布時間、來源、標題、個股代號、tags / modifiers (| 分隔)、entities (JSON)
   個股代號：鉅亨自帶；其他來源從內文「公司名（1234）」樣式抽取。
-用法：python tag_news.py [--months 2026-09 2026-08]   (預設全部月份)
+用法：python tag_news.py                 全部月份重貼 (改過 rules.py 後用)
+      python tag_news.py --changed       只處理新聞檔比標籤檔新的月份 (每日流程用，回補進來的舊月份也會補貼)
+      python tag_news.py --months 2026-09 2026-08
 """
 import argparse
 import json
@@ -51,10 +53,16 @@ def tag_month(path: Path) -> pd.DataFrame:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--months", nargs="*")
+    ap.add_argument("--changed", action="store_true")
     a = ap.parse_args()
     paths = sorted(store.DATA_DIR.glob("新聞_*.parquet"))
     if a.months:
         paths = [p for p in paths if p.stem[-7:] in a.months]
+    if a.changed:
+        def stale(p):
+            dst = TAGGED_DIR / p.name.replace("新聞_", "新聞標籤_")
+            return not dst.exists() or dst.stat().st_mtime < p.stat().st_mtime
+        paths = [p for p in paths if stale(p)]
     total = tagged = 0
     for p in paths:
         out = tag_month(p)
