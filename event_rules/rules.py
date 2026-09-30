@@ -113,7 +113,66 @@ THEMES = {
     "觀光/內需": r"觀光|旅遊|餐飲|陸客|百貨",
     "加密貨幣": r"比特幣|加密貨幣|以太幣|穩定幣",
 }
+
+
+# ---- 使用者維護的對照表 (D:/mops/news/mapping/)：有檔案就併入，沒有就只用上面的內建值
+MAP_DIR = "/mnt/d/mops/news/mapping"
+ENTITY_STOCKS: dict = {}     # 對象 → [台股代號]   (對象概念股.csv，保留≠N)
+THEME_STOCKS: dict = {}      # 題材 → [台股代號]   (題材概念股.csv，保留≠N)
+
+
+def _kw_regex(words) -> str:
+    """關鍵字清單 → 正則。純英數的詞加英文字邊界 (避免 RE 命中 REIT)；過短或純數字的略過。"""
+    parts = []
+    for w in dict.fromkeys(x.strip() for x in words if x and x.strip()):
+        if len(w) < 2 or w.isdigit():
+            continue
+        if re.fullmatch(r"[A-Za-z0-9 .\-/+]+", w):
+            if len(w) < 3:
+                continue
+            parts.append(rf"(?<![A-Za-z]){re.escape(w)}(?![A-Za-z])")
+        else:
+            parts.append(re.escape(w))
+    return "|".join(parts)
+
+
+def _load_mapping() -> None:
+    import csv
+    import os
+
+    def rows(name):
+        path = os.path.join(MAP_DIR, name)
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f))
+
+    for r in rows("題材關鍵字.csv"):
+        rx = _kw_regex((r.get("新聞關鍵字(|分隔)") or "").split("|"))
+        if rx:
+            THEMES[r["題材"]] = rx          # 同名題材以對照表為準
+    for r in rows("題材概念股.csv"):
+        if r.get("股票代號") and r.get("保留(Y/N)", "").upper() != "N":
+            THEME_STOCKS.setdefault(r["題材"], []).append(r["股票代號"])
+    alias = {}
+    for r in rows("對象概念股.csv"):
+        ent = r.get("對象", "")
+        if not ent:
+            continue
+        alias.setdefault(ent, set()).update([ent] + (r.get("別名(|分隔)") or "").split("|"))
+        if r.get("股票代號") and r.get("保留(Y/N)", "").upper() != "N":
+            ENTITY_STOCKS.setdefault(ent, []).append(r["股票代號"])
+    ENTITY_ALIAS.update({e: re.compile(rx) for e, a in alias.items() if (rx := _kw_regex(a))})
+
+
+ENTITY_ALIAS: dict = {}      # 對象 → 別名正則
+_load_mapping()
 _THEME_RE = [(k, re.compile(v)) for k, v in THEMES.items()]
+
+
+def mapped_entities(title: str) -> list:
+    """標題提到的「對象」(對象概念股.csv)。"""
+    return [e for e, rx in ENTITY_ALIAS.items() if rx.search(title or "")]
 
 DENY_RE = re.compile(r"並無|並未|尚無|尚未|未有|沒有|非屬|不實|純屬|臆測|無此|已(於.{0,10})?(結束|停止|終止|退出)|與本公司無關|不予評論|無法評論")
 CONFIRM_RE = re.compile(r"屬實|確有|確實|已簽|已取得|已接獲|正在(洽談|評估|進行)")

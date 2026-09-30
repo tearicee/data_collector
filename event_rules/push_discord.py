@@ -6,6 +6,13 @@
                    (同一事件的多篇報導只推一次；已推過的記在 state/pushed_events.json)
   --mode daily     當日前 N 名總結 (含市場反應分)
   --dry            只印不送
+  --test           測試模式：才允許 --resend-hours 重發舊訊息 (訊息前加 [測試])
+
+防呆 (guarded_send，所有推播都經過這裡；非測試模式一律套用)：
+  1. 只送「新的」：發布時間在 MAX_AGE_HOURS 小時內，且 key 沒推過 (state/pushed_events.json)
+  2. 只送「高分」：分數 ≥ THRESHOLD
+  3. 限量：單次最多 MAX_PER_RUN 則、每小時最多 MAX_PER_HOUR 則；超過的直接捨棄並記為已處理，
+     不會留到下一輪補發 (避免來源一次吐出大量舊資料時洗版)
 """
 import argparse
 import glob
@@ -26,6 +33,7 @@ STATE = Path("/mnt/d/mops/news/state/pushed_events.json")
 STOCK_INFO = "/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet"
 ENV_VAR = "DISCORD_WEBHOOK_URL_NEWS_FRESHNESS"
 THRESHOLD, LOOKBACK_HOURS, MAX_PER_RUN, DAILY_TOP = 7.0, 6, 10, 15
+MAX_AGE_HOURS, MAX_PER_HOUR = 6, 20
 SUMMARY_LEN = 110
 
 
@@ -35,6 +43,47 @@ def webhook() -> str:
     if not url:
         raise RuntimeError(f"找不到 {ENV_VAR}")
     return url
+
+
+def _state() -> dict:
+    if not STATE.exists():
+        return {"pushed": [], "sent_times": []}
+    d = json.loads(STATE.read_text())
+    return {"pushed": d, "sent_times": []} if isinstance(d, list) else d   # 舊格式是純清單
+
+
+def guarded_send(items: list, test: bool = False, dry: bool = False) -> int:
+    """items: [{"key", "time"(Timestamp), "score"(float), "text"}]。回傳實際送出則數。"""
+    from common import notify_discord as nd
+    st = _state()
+    pushed = set(st["pushed"])
+    now = pd.Timestamp.now()
+    sent_times = [t for t in st["sent_times"] if pd.Timestamp(t) >= now - pd.Timedelta(hours=1)]
+    items = sorted(items, key=lambda x: x["time"])
+    if test:
+        ok, skipped = items[:MAX_PER_RUN], []
+    else:
+        fresh = [it for it in items if it["key"] not in pushed]
+        ok = [it for it in fresh if it["time"] >= now - pd.Timedelta(hours=MAX_AGE_HOURS) and it["score"] >= THRESHOLD]
+        room = max(0, min(MAX_PER_RUN, MAX_PER_HOUR - len(sent_times)))
+        ok = sorted(ok, key=lambda x: -x["score"])[:room]
+        ok = sorted(ok, key=lambda x: x["time"])
+        skipped = [it for it in fresh if it not in ok]
+    sent = 0
+    for it in ok:
+        text = ("[測試] " if test else "") + it["text"]
+        print(text, "\n")
+        if not dry:
+            nd.post(text, webhook_url=webhook(), code_block=False)
+            sent += 1
+            sent_times.append(str(now))
+    if not dry and not test:
+        pushed |= {it["key"] for it in ok} | {it["key"] for it in skipped}   # 被擋下的也記錄，之後不補發
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps({"pushed": sorted(pushed)[-20000:], "sent_times": sent_times}))
+    if skipped:
+        print(f"防呆擋下 {len(skipped)} 則 (過舊 / 分數不足 / 超過限量)")
+    return sent
 
 
 def load() -> pd.DataFrame:
@@ -92,26 +141,17 @@ def fmt(r, nm: dict, summ: dict | None = None) -> str:
     return f"{r.time:%Y-%m-%d %H:%M:%S} <{r.event_score:.1f}> {code} {name} {r.direction or '－'} <{r.title}>{link}"
 
 
-def instant(dry: bool, resend_hours: int = 0) -> int:
+def instant(dry: bool, resend_hours: int = 0, test: bool = False) -> int:
     sc, nm = load(), names()
-    pushed = set(json.loads(STATE.read_text()) if STATE.exists() else [])
-    first_run = not STATE.exists()
-    hours = resend_hours or LOOKBACK_HOURS
-    recent = sc[(sc["time"] >= pd.Timestamp.now() - pd.Timedelta(hours=hours))
-                & (sc["event_score"] >= THRESHOLD)]
+    hours = resend_hours if test and resend_hours else LOOKBACK_HOURS
+    recent = sc[sc["time"] >= pd.Timestamp.now() - pd.Timedelta(hours=hours)]
     best = recent.sort_values("event_score", ascending=False).drop_duplicates("event_id")
-    todo = (best if resend_hours else best[~best["event_id"].isin(pushed)]).sort_values("time")
-    todo = todo.head(50 if resend_hours else MAX_PER_RUN)
-    for r in todo.itertuples(index=False):
-        msg = fmt(r, nm)
-        print(msg, "\n")
-        if not dry:
-            notify_discord.post(msg, webhook_url=webhook(), code_block=False)
-            pushed.add(r.event_id)
-    if not dry and (len(todo) or first_run):
-        STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(json.dumps(sorted(pushed)[-5000:]))
-    print(f"instant: 候選 {len(best)}，推送 {len(todo)}")
+    if test:
+        best = best[best["event_score"] >= THRESHOLD]
+    items = [{"key": r.event_id, "time": r.time, "score": float(r.event_score), "text": fmt(r, nm)}
+             for r in best.itertuples(index=False)]
+    n = guarded_send(items, test=test, dry=dry)
+    print(f"instant: 候選 {len(items)}，推送 {n}")
     return 0
 
 
@@ -134,6 +174,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["instant", "daily"], default="instant")
     ap.add_argument("--dry", action="store_true")
-    ap.add_argument("--resend-hours", type=int, default=0, help="重發最近 N 小時內達門檻的事件 (不看是否推過)")
+    ap.add_argument("--test", action="store_true", help="測試模式 (訊息加 [測試]，可搭配 --resend-hours)")
+    ap.add_argument("--resend-hours", type=int, default=0, help="僅測試模式有效：重發最近 N 小時內達門檻的事件")
     a = ap.parse_args()
-    sys.exit(instant(a.dry, a.resend_hours) if a.mode == "instant" else daily(a.dry))
+    if a.resend_hours and not a.test:
+        sys.exit("--resend-hours 只能搭配 --test 使用 (防呆：非測試不重發舊訊息)")
+    sys.exit(instant(a.dry, a.resend_hours, a.test) if a.mode == "instant" else daily(a.dry))

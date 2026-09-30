@@ -43,6 +43,9 @@ from pathlib import Path
 
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from event_rules import rules as R  # noqa: E402
+
 MOPS_EVENTS = "/mnt/d/mops/material_info/derived/重訊事件_*.parquet"
 NEWS_TAGGED = "/mnt/d/mops/news/tagged/新聞標籤_*.parquet"
 PRICE_GLOB = "/mnt/d/finmind_data/TaiwanStockPrice/*/TaiwanStockPrice_*.parquet"
@@ -208,6 +211,8 @@ def _prior(idx: dict, key, o: int) -> int:
 
 
 def _basket(theme_stock: dict, theme: str, o: int) -> list:
+    if R.THEME_STOCKS.get(theme):                  # 使用者對照表優先
+        return R.THEME_STOCKS[theme]
     c = Counter(s for d, s in theme_stock.get(theme, []) if o - BASKET_DAYS <= d < o)
     return [s for s, n in c.most_common(BASKET_SIZE) if n >= BASKET_MIN]
 
@@ -344,14 +349,21 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
         mscore, mwhy, rday = None, [], mk.reaction_day(r.time)
         if rday is not None:
             mscore = 0.0
-            moves = [(c, mk.pct_on(rday, c)) for c in r.tw_list[:5]]
+            targets = r.tw_list[:5]
+            via = ""
+            if not targets:                        # 沒有台股代號 (外國公司事件) → 用對象概念股對應
+                for ent in R.mapped_entities(r.title):
+                    if R.ENTITY_STOCKS.get(ent):
+                        targets, via = R.ENTITY_STOCKS[ent][:8], f"[{ent}概念股] "
+                        break
+            moves = [(c, mk.pct_on(rday, c)) for c in targets]
             moves = [(c, p) for c, p in moves if p is not None]
             if moves:
                 c, p = max(moves, key=lambda x: abs(x[1]))
                 if abs(p) >= 9.5:
-                    mscore += W["mkt_stock_limit"]; mwhy.append(f"{c} {p:+.1f}% (漲跌停) +{W['mkt_stock_limit']}")
+                    mscore += W["mkt_stock_limit"]; mwhy.append(f"{via}{c} {p:+.1f}% (漲跌停) +{W['mkt_stock_limit']}")
                 elif abs(p) >= 5:
-                    mscore += W["mkt_stock_big"]; mwhy.append(f"{c} {p:+.1f}% +{W['mkt_stock_big']}")
+                    mscore += W["mkt_stock_big"]; mwhy.append(f"{via}{c} {p:+.1f}% +{W['mkt_stock_big']}")
                 if not direction and abs(p) >= 5:
                     direction = "多" if p > 0 else "空"
             best = None

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 概念股對照表產生器 (D:/mops/news/mapping/)
-  1. 熱門族群.dsl (XQ 自選股匯出，cp950「分類:,2330.TW,…」) → 題材概念股_草稿.csv
+  1. 熱門族群.dsl (XQ 自選股匯出，cp950「分類:,2330.TW,…」) → 題材概念股.csv
      - DSL 每個分類一個題材 (來源=DSL，保留=Y)；同一檔可出現在多個題材
      - 另加 EXTRA_THEMES 跨股票題材：有新聞統計者列出系統建議 (來源=系統建議，保留留白)，
        沒有的留一列空白待填
@@ -22,9 +22,9 @@ import pandas as pd
 
 MAP_DIR = Path("/mnt/d/mops/news/mapping")
 DSL = MAP_DIR / "熱門族群.dsl"
-THEME_CSV = MAP_DIR / "題材概念股_草稿.csv"
+THEME_CSV = MAP_DIR / "題材概念股.csv"
 KEYWORD_CSV = MAP_DIR / "題材關鍵字.csv"
-ENTITY_CSV = MAP_DIR / "對象概念股_範本.csv"
+ENTITY_CSV = MAP_DIR / "對象概念股.csv"
 STOCK_INFO = "/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet"
 NEWS_DATA = "/mnt/d/mops/news/data/新聞_*.parquet"
 NEWS_TAGGED = "/mnt/d/mops/news/tagged/新聞標籤_*.parquet"

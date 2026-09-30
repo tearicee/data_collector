@@ -7,8 +7,12 @@
   - 郭明錤 Medium  https://medium.com/feed/@mingchikuo  —— RSS 含全文 (中、英文各一篇)，只給最近 10 篇
   - 郭明錤 X       syndication.twitter.com 嵌入時間軸 (免登入，但經常 429 限流) → 盡力而為，
                    抓得到就存，抓不到不算失敗。要穩定取得 X 全部貼文需官方 X API 金鑰。
-  - SemiAnalysis、Stratechery RSS (同類型的產業深度分析)
-新發文會推到 Discord 新鮮度頻道 (與新聞同格式，分數欄顯示「分析師」)。
+  - SemiAnalysis、Stratechery、TrendForce 集邦 (英文新聞)、Fabricated Knowledge、The Information、
+    Mark Gurman (彭博作者 RSS，只有標題)、MacRumors (只留提到名單分析師的文章)
+  - 媒體轉述：陸行之、楊應超、蒲得宇、Ross Young、Counterpoint、IDC、Omdia 等沒有公開 RSS
+    (Facebook/券商報告/付費牆)，改從新聞庫找提到他們的報導 (MENTIONS)
+分析師本人的新發文 (Medium/X) 會推到 Discord，一律經 push_discord.guarded_send 防呆
+(只送 6 小時內、未推過、分數達門檻者，且有單次與每小時上限)；媒體轉述不在此推送。
 另輸出關鍵字清單供人工整理：/mnt/d/mops/news/mapping/分析師關鍵字_<作者>.csv
 cron：每 15 分鐘。
 """
@@ -39,7 +43,22 @@ SOURCES = [
     {"作者": "郭明錤", "平台": "X", "type": "x", "handle": "mingchikuo", "push": True},
     {"作者": "SemiAnalysis", "平台": "網站", "type": "rss", "url": "https://semianalysis.com/feed/", "push": False},
     {"作者": "Stratechery", "平台": "網站", "type": "rss", "url": "https://stratechery.com/feed/", "push": False},
+    {"作者": "TrendForce集邦", "平台": "網站", "type": "rss", "url": "https://www.trendforce.com/news/feed/", "push": False},
+    {"作者": "Fabricated Knowledge", "平台": "網站", "type": "rss", "url": "https://www.fabricatedknowledge.com/feed", "push": False},
+    {"作者": "The Information", "平台": "網站", "type": "rss", "url": "https://www.theinformation.com/feed", "push": False},
+    {"作者": "Mark Gurman", "平台": "彭博", "type": "rss",
+     "url": "https://www.bloomberg.com/authors/AS7Hj1mBMGM/mark-gurman.rss", "push": False, "lang": "英文"},
+    # MacRumors 只留提到下列分析師的文章 (作者欄記為被引用的人)
+    {"作者": "MacRumors", "平台": "媒體轉述", "type": "rss", "url": "https://feeds.macrumors.com/MacRumors-All",
+     "push": False, "mention_only": True},
 ]
+# 沒有自己的公開發文管道 (Facebook、券商報告、付費牆) 者：從新聞庫找提到他們的報導，記為「媒體轉述」
+MENTIONS = {
+    "陸行之": r"陸行之", "楊應超": r"楊應超", "蒲得宇": r"蒲得宇|Jeff Pu", "Ross Young": r"Ross Young|DSCC",
+    "Mark Gurman": r"古爾曼|Gurman", "郭明錤": r"郭明錤|Ming-Chi Kuo", "TrendForce集邦": r"集邦|TrendForce",
+    "Counterpoint": r"Counterpoint", "IDC": r"(?<![A-Za-z])IDC(?![A-Za-z])", "Omdia": r"Omdia",
+}
+MENTION_DAYS = 3
 
 
 def now() -> str:
@@ -60,8 +79,15 @@ def rss(src: dict) -> list:
         lines = body.split("\n")
         if len(lines) > 1 and lines[0].strip() == lines[1].strip():
             body = "\n".join(lines[1:])
+        title = dn.clean_html(it.findtext("title"))
+        author = src["作者"]
+        if src.get("mention_only"):
+            hit = next((k for k, pat in MENTIONS.items() if re.search(pat, f"{title} {body}")), None)
+            if not hit:
+                continue
+            author = hit
         rows.append({"發布時間": dn.parse_pubdate(it.findtext("pubDate")).strftime("%Y-%m-%d %H:%M:%S"),
-                     "作者": src["作者"], "平台": src["平台"], "語言": lang_of(body),
+                     "作者": author, "平台": src["平台"], "語言": src.get("lang") or lang_of(title + body),
                      "標題": dn.clean_html(it.findtext("title")), "內文": body,
                      "連結": dn.clean_link(it.findtext("link")), "互動數": None, "抓取時間": now()})
     return rows
@@ -91,6 +117,22 @@ def x_timeline(src: dict) -> list:
                      "連結": f"https://x.com/{src['handle']}/status/{tw['id_str']}",
                      "互動數": float((tw.get("favorite_count") or 0) + (tw.get("retweet_count") or 0)),
                      "抓取時間": now()})
+    return rows
+
+
+def media_mentions() -> list:
+    """新聞庫最近 MENTION_DAYS 天內，標題或內文前 300 字提到名單人物/機構的報導。"""
+    import store
+    since = (pd.Timestamp.now() - pd.Timedelta(days=MENTION_DAYS)).strftime("%Y-%m-%d")
+    df = store.read_range(since)
+    head = df["標題"].fillna("") + " " + df["內文"].fillna("").str[:300]
+    rows = []
+    for who, pat in MENTIONS.items():
+        m = df[head.str.contains(pat, regex=True, na=False)]
+        for r in m.itertuples(index=False):
+            rows.append({"發布時間": r.發布時間.strftime("%Y-%m-%d %H:%M:%S"), "作者": who, "平台": f"媒體轉述({r.來源})",
+                         "語言": "中文", "標題": r.標題, "內文": r.內文, "連結": f"{r.連結}#{who}",
+                         "互動數": None, "抓取時間": now()})
     return rows
 
 
@@ -202,15 +244,24 @@ def keyword_table(author: str) -> pd.DataFrame:
     return out
 
 
-def push(new: list) -> None:
+ORIGINAL_SCORE = {"Medium": 8.0, "X": 7.0}   # 分析師本人發文視為高分；媒體轉述交給新聞評分流程，不在這裡推
+
+
+def push(new: list, test: bool = False) -> None:
+    """經 push_discord.guarded_send 防呆：只送 6 小時內的新發文、分數達門檻、且有單次/每小時上限。"""
     from event_rules import push_discord as pd_
-    from common import notify_discord
-    for r in sorted(new, key=lambda x: x["發布時間"]):
+    items = []
+    for r in new:
+        if r["平台"] not in ORIGINAL_SCORE:
+            continue
         if r["語言"] != "中文" and any(n["作者"] == r["作者"] and n["語言"] == "中文" and
                                       abs((n["發布時間"] - r["發布時間"]).total_seconds()) < 600 for n in new):
             continue  # 同一篇的英文版不重複推
-        msg = f"{r['發布時間']:%Y-%m-%d %H:%M:%S} <分析師> － {r['作者']} － <{r['標題'][:90]}> <{r['連結']}>"
-        notify_discord.post(msg, webhook_url=pd_.webhook(), code_block=False)
+        score = ORIGINAL_SCORE[r["平台"]] if len(r["內文"]) >= 150 else 5.0
+        text = (f"{r['發布時間']:%Y-%m-%d %H:%M:%S} <{score:.1f}> － {r['作者']} － <{r['標題'][:90]}> "
+                f"<{r['連結'].split('#')[0]}>")
+        items.append({"key": r["連結"], "time": r["發布時間"], "score": score, "text": text})
+    pd_.guarded_send(items, test=test)
 
 
 def main() -> int:
@@ -228,6 +279,14 @@ def main() -> int:
             errors.append(f"{src['作者']}/{src['平台']}")
             print(f"{now()} [ERROR] {src['作者']}/{src['平台']}: {e}", flush=True)
         time.sleep(2)
+    try:
+        new = upsert(media_mentions())
+        total += len(new)
+        by = pd.Series([n["作者"] for n in new]).value_counts().to_dict() if new else {}
+        print(f"{now()} 媒體轉述: 新增 {len(new)} {by}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        errors.append("媒體轉述")
+        print(f"{now()} [ERROR] 媒體轉述: {e}", flush=True)
     if total or "--keywords" in sys.argv:
         for author in {s["作者"] for s in SOURCES if s.get("push")}:
             k = keyword_table(author)
