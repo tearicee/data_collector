@@ -113,6 +113,32 @@ data_collector/
 
 ---
 
+## 📁 news/ — 財經新聞
+
+全量收集 (不篩選)，存 `D:/mops/news/data/新聞_YYYY-MM.parquet`（含完整內文）。**全天每 15 分鐘輪詢**。
+
+| 檔案 | 用途 |
+|---|---|
+| `download_news.py` | `poll`：鉅亨 API + 經濟日報/工商時報/科技新報/自由財經/中央社/MoneyDJ RSS，新連結逐篇抓原文頁全文；`backfill`：鉅亨逐日回補 (可續傳)；`fulltext`：補抓過短內文 |
+| `store.py` | 新聞 Parquet 儲存層 (鍵 = 連結) |
+| `tag_news.py` | 依 `event_rules/rules.py` 貼事件標籤 → `D:/mops/news/tagged/` |
+| `clean_labels.py` | 整理人工標註檔 `daily_script/data/重要新聞.csv` → `D:/mops/news/labels/` |
+| `run_news.sh` | cron 啟動腳本 |
+
+## 📁 event_rules/ — 事件標籤與新鮮度評分 (純規則，不經 AI 模型)
+
+| 檔案 | 用途 |
+|---|---|
+| `rules.py` | 事件類別 (多標籤)、新鮮度用語、重量級對象的文字模式；調整方向只改這個檔 |
+| `numparse.py` | 金額 (含國字大寫/仟萬億)、百分比、股數、民國日期解析 |
+| `freshness.py` | 重訊事件 + 新聞標籤併表，算「標籤×對象類別」在台股過去一年出現天數等稀有度 + 用語/金額加減分 → `D:/mops/news/scored/新鮮度_YYYY-MM.parquet`、`review/新鮮度檢視_日期.csv` (人工回饋用)；權重在 `WEIGHTS` |
+| `run_pipeline.sh` | 每日流程：重訊過濾 → 標籤/數據抽取 → 新聞標籤 → 評分 (cron 07:40/13:40/18:40/22:40) |
+
+重訊側另有 `material_info/filter_material_info.py` (重發/例行/候選標記、公司行動階段) 與
+`material_info/extract_events.py` (現增/私募/可轉債/減資/自結/庫藏股數據抽取)，輸出於 `D:/mops/material_info/derived/`。
+
+---
+
 ## ⏰ 自動排程 (crontab)
 
 | 時間 | 工作 |
@@ -120,6 +146,8 @@ data_collector/
 | 06:00 每天 | `taifex/run_taifex_daily.sh` — 期交所期貨+選擇權下載 + 同步雲端 |
 | 18:55 週一~五 | `etf/run_crawler.sh` — ETF 持股爬蟲 (隨機延遲 0~10 分) + 同步雲端 |
 | 07:00~23:50 每 10 分 / 07:20 每天 | `material_info/run_material_info.sh poll` / `daily` — 重大訊息輪詢 / 回掃對帳 (僅存 D 槽) |
+| 全天每 15 分 | `news/run_news.sh` — 財經新聞輪詢 (僅存 D 槽) |
+| 07:40/13:40/18:40/22:40 | `event_rules/run_pipeline.sh` — 重訊+新聞標籤與新鮮度評分 |
 | 20:00 每天 | `finmind/daily_update.sh` — FinMind 股票 tick 每日更新 + 同步雲端 |
 
 > 其餘 crontab 項目 (tick_alert、Dashboard) 屬其他專案，不在本資料夾範圍。
