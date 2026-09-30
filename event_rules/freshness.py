@@ -77,6 +77,7 @@ SELF_CHG, SELF_CHG_BIG = 20.0, 50.0                # 自結較最近一期變動
 NEWS_SKIP_TAGS = {"自結"}                          # 這些標籤只評重訊；新聞若只有這些標籤則不評分
 MERGE_HOURS, MERGE_SIM, MERGE_SIM_NUM = 36, 0.45, 0.25
 RUNUP_DAYS, RUNUP_PCT = 5, 15.0                    # 澄清前 5 個交易日漲幅 ≥15%
+NOVEL_GRACE_DAYS = 14                              # 題材新穎度寬限：近 14 天才開始共現的仍算「新題材」
 FOCUS_MAX_STOCKS = 3                               # 題材新穎度只看「主角明確」的文章 (台股代號 ≤3 檔)
 BASKET_DAYS, BASKET_SIZE, BASKET_MIN = 180, 15, 3
 FX = {"TWD": 1, "USD": 32, "CNY": 4.4, "JPY": 0.21, "EUR": 35, "HKD": 4.1}
@@ -281,16 +282,18 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             for c in r.tw_list:
                 ind = mk.industry.get(c, "")
                 for th in r.ttheme_list:
-                    if _prior(idx, ("T", c, th), o) > 0:
+                    if _prior(idx, ("T", c, th), o - NOVEL_GRACE_DAYS) > 0:   # 14 天前就出現過 → 不算新
                         continue
+                    since = o - min((d for d in idx.get(("T", c, th), []) if d >= o - NOVEL_GRACE_DAYS), default=o)
                     total = sum(theme_ind[th].values())
                     share = theme_ind[th][ind] / total if total else 1
                     cross = bool(ind) and total >= CROSS_MIN_SAMPLE and share < CROSS_SHARE_MAX
                     if best is None or cross > best[3]:
-                        best = (c, th, ind, cross, share)
+                        best = (c, th, ind, cross, share, since)
             if best:
-                c, th, ind, cross, share = best
-                s += W["theme_first"]; why.append(f"{c} 首次與「{th}」題材一起出現 +{W['theme_first']}")
+                c, th, ind, cross, share, since = best
+                when = "首次" if since == 0 else f"{since} 天前才開始"
+                s += W["theme_first"]; why.append(f"{c} {when}與「{th}」題材一起出現 +{W['theme_first']}")
                 if cross:
                     s += W["theme_cross"]
                     why.append(f"跨界：{ind}在「{th}」新聞中僅占 {share:.1%} +{W['theme_cross']}")
