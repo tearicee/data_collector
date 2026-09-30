@@ -159,6 +159,26 @@ def x_self_report(f: dict, body: str) -> dict:
     d = {}
     seg = body[body.find("財務業務資訊"):] if "財務業務資訊" in body else body
     unit = "仟元" if re.search(r"仟元|千元", seg[:900]) else ("百萬" if "百萬" in seg[:900] else "")
+    if re.search(r"[(（]一[)）]\s*單月", seg):  # 櫃買版式：單月/單季/四季累計三段，每列 = 本期、去年同期、增減%
+        block = ""
+        for line in seg.split("\n"):
+            m = re.search(r"[(（][一二三][)）]\s*(單月|單季|最近四季累計)", line)
+            if m:
+                block = {"單月": "最近一月", "單季": "最近一季", "最近四季累計": "近四季累計"}[m[1]]
+                continue
+            key = next((v for k, v in _ROW.items() if k in line), None)
+            nums = [float(n.replace(",", "")) for n in re.findall(r"-?[\d,]+\.?\d*", re.sub(r"^[^\d\-]*?[)）]", "", line, 1))]
+            if not (block and key and nums) or f"{key}_{block}" in d:
+                continue
+            d[f"{key}_{block}"] = nums[0]
+            if len(nums) >= 3 and block != "近四季累計":
+                d[f"{key}_{block}_去年同期"] = nums[1]
+                d[f"{key}_{'月' if block == '最近一月' else '季'}年增_pct"] = nums[2]
+        m = re.search(r"單月\s*(\d{2,3})年\s*(\d{1,2})月", seg)
+        if d:
+            _set(d, "金額單位", unit)
+            _set(d, "資料月份", f"{int(m[1]) + 1911}-{int(m[2]):02d}" if m else "")
+        return d
     for line in seg.split("\n"):
         key = next((v for k, v in _ROW.items() if k in line), None)
         nums = re.findall(r"-?\(?[\d,]+(?:\.\d+)?\)?", re.sub(r"^[^\d\-(]*", "", line))
