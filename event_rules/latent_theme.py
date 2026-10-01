@@ -59,7 +59,8 @@ def momentum(px: pd.DataFrame) -> pd.DataFrame:
 
 def hot_pairs(sc: pd.DataFrame, today: pd.Timestamp) -> list:
     w = sc[(sc["time"] >= today - pd.Timedelta(days=HOT_DAYS)) & sc["reasons"].str.contains("跨界", na=False)
-           & (sc["event_score"] >= HOT_SCORE) & (sc["market_score"].fillna(0) >= 2)]   # 新聞夠新鮮且股價已反應
+           & (sc["event_score"] >= HOT_SCORE) & (sc["market_score"].fillna(0) >= 2)    # 新聞夠新鮮且股價已反應
+           & (sc["direction"] != "空") & ~sc["reasons"].str.contains("否認|監管處分", na=False)]   # 否認題材/利空不算熱點
     pairs = {}
     for r in w.itertuples():
         m = re.search(r"跨界：(.+?)在「(.+?)」", r.reasons)
@@ -123,6 +124,9 @@ def detect(push: bool, dry: bool) -> int:
                              "前一日%": round(m["ret1_prev"], 1), "量比": round(m["vol_ratio"], 2), "收盤": m["close"], "同業來源": how,
                              "狀態": "待驗證", "5日後%": None, "10日後%": None, "之後出現同題材新聞": None})
     sig = pd.DataFrame(rows)
+    if len(sig):   # 同一候選對到多組熱點時只留一列 (自訂分組優先)
+        sig["_o"] = sig["同業來源"].str.startswith("自訂分組").map({True: 0, False: 1})
+        sig = sig.sort_values("_o").drop_duplicates("候選").drop(columns="_o")
     print(f"熱點 {len(pairs)} 組：{[(i, t, a) for i, t, a in pairs]}；候選 {len(sig)} 檔")
     if sig.empty:
         return 0

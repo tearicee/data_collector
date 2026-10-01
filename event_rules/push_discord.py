@@ -188,11 +188,17 @@ def daily(dry: bool) -> int:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["instant", "daily"], default="instant")
+    ap.add_argument("--mode", choices=["instant", "daily", "text"], default="instant")
+    ap.add_argument("--key", help="text 模式：去重用的 key (同 key 只送一次)")
+    ap.add_argument("--text-file", help="text 模式：訊息內容檔")
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--test", action="store_true", help="測試模式 (訊息加 [測試]，可搭配 --resend-hours)")
     ap.add_argument("--resend-hours", type=int, default=0, help="僅測試模式有效：重發最近 N 小時內達門檻的事件")
     a = ap.parse_args()
     if a.resend_hours and not a.test:
         sys.exit("--resend-hours 只能搭配 --test 使用 (防呆：非測試不重發舊訊息)")
+    if a.mode == "text":   # 其他程式 (例如跑在別的 venv 的跳空檢討) 透過這裡送出，同樣受防呆限制
+        msg = Path(a.text_file).read_text(encoding="utf-8")
+        n = guarded_send([{"key": a.key, "time": pd.Timestamp.now(), "score": 10.0, "text": msg}], test=a.test, dry=a.dry)
+        sys.exit(0 if n or a.dry else 0)
     sys.exit(instant(a.dry, a.resend_hours, a.test) if a.mode == "instant" else daily(a.dry))

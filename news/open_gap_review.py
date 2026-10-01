@@ -126,7 +126,28 @@ def analyze(df: pd.DataFrame, day: str) -> tuple:
     return pd.DataFrame(rows), pd.DataFrame(nonews), round(market_gap, 2)
 
 
+def fill_close() -> int:
+    """收盤後把當日收盤漲跌幅回填到跳空檢討兩個 CSV (看跳空是延續還是回落)。"""
+    files = sorted(glob.glob("/mnt/d/finmind_data/TaiwanStockPrice/*/TaiwanStockPrice_*.parquet"))
+    for kind in ("跳空檢討", "無新聞大漲跌"):
+        for path in sorted(REVIEW_DIR.glob(f"{kind}_*.csv"))[-3:]:
+            day = path.stem[-10:]
+            px = [f for f in files if f.endswith(f"{day}.parquet")]
+            df = pd.read_csv(path, dtype=str, keep_default_na=False)
+            if not px or df.empty or "收盤漲跌%" in df:
+                continue
+            p = pd.read_parquet(px[0], columns=["stock_id", "close", "spread"])
+            pct = (p["spread"] / (p["close"] - p["spread"]) * 100).round(2)
+            m = dict(zip(p["stock_id"], pct))
+            df.insert(df.columns.get_loc("相對跳空%") + 1, "收盤漲跌%", df["代號"].map(m))
+            df.to_csv(path, index=False, encoding="utf-8-sig")
+            print(f"{path.name} 已回填收盤漲跌")
+    return 0
+
+
 def main() -> int:
+    if "--fill-close" in sys.argv:
+        return fill_close()
     day = datetime.now().strftime("%Y-%m-%d")
     path = SNAP_DIR / f"開盤快照_{day}.parquet"
     df = pd.read_parquet(path) if path.exists() and "--reuse" in sys.argv else take_snapshot(day)
@@ -146,9 +167,13 @@ def main() -> int:
         lines.append(f"無新聞｜{r['代號']} {r['名稱']} {r['相對跳空%']:+.1f}%（{r['產業']}）")
     msg = "\n".join(lines)
     print(msg)
-    if "--no-push" not in sys.argv:
-        from event_rules import push_discord as pdc
-        pdc.guarded_send([{"key": f"gap-{day}", "time": pd.Timestamp.now(), "score": 10.0, "text": msg}])
+    if "--no-push" not in sys.argv:   # 這支跑在只有 shioaji 的 venv，推播交給 data_collector 的 venv
+        import subprocess
+        tmp = REVIEW_DIR / f".gap_msg_{day}.txt"
+        tmp.write_text(msg, encoding="utf-8")
+        subprocess.run([str(DC_ROOT / ".venv/bin/python"), str(DC_ROOT / "event_rules/push_discord.py"),
+                        "--mode", "text", "--key", f"gap-{day}", "--text-file", str(tmp)], check=False)
+        tmp.unlink(missing_ok=True)
     try:
         from common import heartbeat
         heartbeat.write("open_gap_review", heartbeat.STATUS_OK, 0, f"異常 {len(rev) + len(nonews)}",
