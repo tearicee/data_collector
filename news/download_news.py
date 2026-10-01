@@ -9,6 +9,8 @@
       個股代號 (market[].code)、關鍵字。
   - RSS：經濟日報 (產業/股市/國際)、科技新報、工商時報 (證券/產業/科技/政策/金融/兩岸)
       另有自由財經、中央社 (財經/產經)、MoneyDJ。
+  - Yahoo 股市 (轉載多家)、DIGITIMES (RSS 全文)、ETtoday 財經、MoneyDJ 台股/產業頻道
+  - 中時新聞網財經：RSS/一般請求被擋，用 curl_cffi 模擬瀏覽器抓列表頁 + 原文
   - 聯合新聞網 udn.com (產經/股市；個股情報在這裡，不在 money.udn.com)：RSS 壞掉 (標題空白)，
       改用列表 API udn.com/api/more?type=cate_latest_news&cate_id=6644|6645，每頁 6 則往回翻。
       RSS 只有最近的文章且只給摘要 → 新連結逐篇抓原文頁取完整內文 (BODY_XPATH)；
@@ -57,7 +59,15 @@ RSS_FEEDS = [
     ("中央社", "財經", "https://feeds.feedburner.com/rsscna/finance"),
     ("中央社", "產經", "https://feeds.feedburner.com/rsscna/technology"),
     ("MoneyDJ", "新聞", "https://www.moneydj.com/kmdj/RssCenter.aspx?svc=NR&fno=1&arg=MB010000"),
+    ("MoneyDJ", "台股", "https://www.moneydj.com/kmdj/RssCenter.aspx?svc=NW&fno=1&arg=X0000000"),
+    ("MoneyDJ", "產業", "https://www.moneydj.com/kmdj/RssCenter.aspx?svc=NW&fno=1&arg=X1000000"),
+    ("Yahoo股市", "新聞", "https://tw.stock.yahoo.com/rss?category=tw-market"),   # 轉載多家媒體 (財訊快報、中央社…)
+    ("DIGITIMES", "科技", "https://www.digitimes.com.tw/rss/news.xml"),
+    ("ETtoday財經", "財經", "https://feeds.feedburner.com/ettoday/finance"),
 ]
+# 中時新聞網財經：RSS 與一般請求都被擋 (403/404)，用 curl_cffi 模擬瀏覽器抓列表頁 + 原文
+CHINATIMES_LIST = "https://www.chinatimes.com/money/?chdtv"
+IMPERSONATE = {"中時新聞網"}
 UDN_API = "https://udn.com/api/more"
 UDN_CATES = {"6644": "產經", "6645": "股市"}
 UDN_MAX_PAGES = 25
@@ -69,6 +79,10 @@ BODY_XPATH = {  # 原文頁的內文段落
     "自由財經": "//div[@class='text']//p[not(@class)]",
     "中央社": "//div[@class='paragraph']//p",
     "MoneyDJ": "//*[@id='highlight']",
+    "Yahoo股市": "//article//p[not(contains(.,'Google 偏好來源')) and not(contains(.,'設為首選來源'))]",
+    "DIGITIMES": "//div[contains(@class,'content')]//p[not(contains(.,'{'))]",
+    "ETtoday財經": "//div[@class='story']//p[not(starts-with(normalize-space(.),'▲'))]",
+    "中時新聞網": "//div[contains(@class,'article-body')]//p",
 }
 MIN_BODY = 200  # 內文短於此視為只有摘要
 SESSION = requests.Session()
@@ -151,11 +165,43 @@ def cnyes_day(d: date, counter: list) -> list:
 
 
 # ------------------------------------------------------------------ RSS
+def get_html(link: str, source: str = "") -> str:
+    if source in IMPERSONATE:
+        from curl_cffi import requests as cr
+        r = cr.get(link, impersonate="chrome", timeout=30)
+        r.raise_for_status()
+        return r.text
+    return get(link, retries=2).content.decode("utf-8", "ignore")
+
+
+def chinatimes_rows(since: datetime) -> list:
+    """中時財經首頁列表 (h3.title a + time)。"""
+    time.sleep(random.uniform(*SLEEP))
+    tree = lxml_html.fromstring(get_html(CHINATIMES_LIST, "中時新聞網"))
+    rows = []
+    for li in tree.xpath("//*[(self::h3 or self::h2) and contains(@class,'title')]/a/ancestor::*[self::li or self::article or self::div][1]"):
+        a = li.xpath(".//*[(self::h3 or self::h2) and contains(@class,'title')]/a")
+        tm = li.xpath(".//time/@datetime") or ["".join(li.xpath(".//time//text()"))]
+        if not a:
+            continue
+        m = re.search(r"(\d{2}:\d{2}).*?(\d{4}/\d{2}/\d{2})", tm[0]) or re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})", tm[0])
+        if not m:
+            continue
+        pub = (datetime.strptime(f"{m[2]} {m[1]}", "%Y/%m/%d %H:%M") if "/" in m[2]
+               else datetime.strptime(f"{m[1]} {m[2]}", "%Y-%m-%d %H:%M"))
+        if pub < since:
+            continue
+        rows.append({"發布時間": pub.strftime("%Y-%m-%d %H:%M:%S"), "來源": "中時新聞網", "分類": "財經",
+                     "標題": clean_html(a[0].text_content()), "摘要": "", "內文": "",
+                     "連結": clean_link(a[0].get("href")), "個股代號": "", "關鍵字": "", "抓取時間": ts()})
+    return rows
+
+
 def fetch_body(source: str, link: str) -> str:
     """抓原文頁完整內文；失敗回空字串 (呼叫端保留摘要)。"""
     try:
         time.sleep(random.uniform(*SLEEP))
-        tree = lxml_html.fromstring(get(link, retries=2).content.decode("utf-8", "ignore"))
+        tree = lxml_html.fromstring(get_html(link, source))
         for bad in tree.xpath("//script|//style|//figure|//figcaption"):
             bad.drop_tree()
         ps = [re.sub(r"\s+", " ", p.text_content()).strip() for p in tree.xpath(BODY_XPATH[source])]
@@ -262,6 +308,11 @@ def poll(hours: int) -> int:
             stats[f"{source}-{cat}"] = (len(rows), store.upsert(rows))
         except Exception as e:  # noqa: BLE001
             errors.append(f"{source}-{cat}: {e}")
+    try:
+        rows = with_fulltext("中時新聞網", chinatimes_rows(since))
+        stats["中時新聞網-財經"] = (len(rows), store.upsert(rows))
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"中時新聞網: {e}")
     for cate, name in UDN_CATES.items():
         try:
             rows = with_fulltext("聯合新聞網", udn_rows(cate, since))
@@ -272,7 +323,7 @@ def poll(hours: int) -> int:
     log("poll " + " ".join(f"{k}={a}/{n}新" for k, (a, n) in stats.items()) + f" 合計新增 {new}")
     for e in errors:
         log(f"  [ERROR] {e}")
-    ok = len(errors) < len(CNYES_CATS) + len(RSS_FEEDS) + len(UDN_CATES)  # 全部來源都失敗才算失敗
+    ok = len(errors) < len(CNYES_CATS) + len(RSS_FEEDS) + len(UDN_CATES) + 1  # 全部來源都失敗才算失敗
     heartbeat.write("news_poll", heartbeat.STATUS_OK if ok else heartbeat.STATUS_FAIL,
                     0 if ok else 1, f"新增 {new}",
                     stats={"new": new, "failed": [e.split(":")[0] for e in errors]})
