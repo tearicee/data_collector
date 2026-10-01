@@ -130,7 +130,8 @@ THEMES = {
 # ---- 使用者維護的對照表 (D:/mops/news/mapping/)：有檔案就併入，沒有就只用上面的內建值
 MAP_DIR = "/mnt/d/mops/news/mapping"
 ENTITY_STOCKS: dict = {}     # 對象 → [台股代號]   (對象概念股.csv，保留≠N)
-THEME_STOCKS: dict = {}      # 題材 → [台股代號]   (題材概念股.csv，保留≠N)
+THEME_STOCKS: dict = {}      # 題材 → [台股代號]   (題材概念股.csv，保留≠N；母題材 = 各子題材聯集)
+THEME_PARENT: dict = {}      # 子題材 → 母題材 (新聞判斷用母題材；族群股價觀察用子題材)
 
 
 def _kw_regex(words) -> str:
@@ -164,8 +165,14 @@ def _load_mapping() -> None:
         if rx:
             THEMES[r["題材"]] = rx          # 同名題材以對照表為準
     for r in rows("題材概念股.csv"):
+        parent = r.get("母題材") or r["題材"]
+        THEME_PARENT[r["題材"]] = parent
         if r.get("股票代號") and r.get("保留(Y/N)", "").upper() != "N":
             THEME_STOCKS.setdefault(r["題材"], []).append(r["股票代號"])
+            if parent != r["題材"]:
+                lst = THEME_STOCKS.setdefault(parent, [])
+                if r["股票代號"] not in lst:
+                    lst.append(r["股票代號"])
     alias = {}
     for r in rows("對象概念股.csv"):
         ent = r.get("對象", "")
@@ -201,10 +208,13 @@ def clarification_stance(answer: str) -> str:
 
 
 def themes_of(title: str, body: str = "") -> dict:
-    """{"title": [標題命中的題材], "all": [標題+內文前 600 字命中的題材]}"""
+    """{"title": [標題命中的題材], "all": [標題+內文前 600 字命中], "sub": [子題材]}
+    新聞層級用母題材 (細分題材命中時歸到母題材)；sub 保留子題材供族群股價觀察。"""
     head = f"{title}\n{(body or '')[:600]}"
-    return {"title": [k for k, rx in _THEME_RE if rx.search(title or "")],
-            "all": [k for k, rx in _THEME_RE if rx.search(head)]}
+    t_sub = [k for k, rx in _THEME_RE if rx.search(title or "")]
+    a_sub = [k for k, rx in _THEME_RE if rx.search(head)]
+    up = lambda lst: list(dict.fromkeys(THEME_PARENT.get(k, k) for k in lst))
+    return {"title": up(t_sub), "all": up(a_sub), "sub": a_sub}
 
 
 _TAG_RE = [(r["tag"], re.compile(r["text"]), r.get("fields", [])) for r in TAG_RULES]
