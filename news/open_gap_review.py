@@ -65,7 +65,11 @@ def take_snapshot(day: str) -> pd.DataFrame:
             for s in api.snapshots(uni[i:i + 500]):
                 d = dict(s.__dict__)
                 d["ts"] = pd.Timestamp(d["ts"], unit="ns").tz_localize("UTC").tz_convert("Asia/Taipei").tz_localize(None)
-                d["exchange"] = str(d["exchange"]).split(".")[-1]
+                for k in ("exchange", "tick_type", "change_type"):   # enum → 字串
+                    d[k] = str(d[k]).split(".")[-1]
+                for k, v in list(d.items()):
+                    if not isinstance(v, (int, float, str, pd.Timestamp)) and v is not None:
+                        d[k] = str(v)
                 rows.append(d)
         ref = {}
         for c in uni:  # 昨收 (contracts.info 的 reference)
