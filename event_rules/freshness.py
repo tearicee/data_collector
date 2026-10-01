@@ -58,7 +58,8 @@ LOOKBACK = 365
 HISTORY_MIN_DAYS = 180
 
 # 低資訊量標籤：不參與稀有度計算、也不單獨構成候選
-LOW_TAGS = {"法說會", "人事異動", "金融投資", "背書保證/資金貸與", "股東會", "供應鏈連動", "機構評等", "財報", "營收", "籌資進度"}
+LOW_TAGS = {"法說會", "人事異動", "金融投資", "背書保證/資金貸與", "股東會", "供應鏈連動", "機構評等", "財報", "營收", "籌資進度", "最後過戶日"}
+STALE_MIN_DAYS, STALE_MAX_DAYS, STALE_SIM = 2, 30, 0.5
 WEIGHTS = {
     "base": 2.0,
     "combo_never": 3.0, "combo_rare": 1.5,        # 標籤×對象類別：0 天 / ≤3 天
@@ -74,6 +75,9 @@ WEIGHTS = {
     "regulatory": 4.0, "regulatory_restore": 2.0,                    # 變更交易方法/全額交割/處置 (方向空)；恢復普通交易 (方向多)
     "raise_progress": 2.0,                                           # 代收價款行庫/收足股款：籌資進入執行階段
     "politics_no_industry": -1.0,                                    # 政要新聞沒有產業指向 (純政治)
+    "tender_offer": 4.0, "tender_offer_update": 2.5,                # 公開收購 開始/條件 ；延長/進度/最後過戶
+    "listing_day": 2.5,                                              # 增資/新股上市買賣日
+    "stale_news": -1.5,                                              # 舊聞：同個股 2~30 天前已有相似標題
     "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
     "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
     "selfreport_chg": 1.5, "selfreport_chg_big": 3.0, "selfreport_both": 1.0, "selfreport_loss_runup": 1.0, "multi_source": 0.5,
@@ -280,9 +284,38 @@ def _self_change(sr: dict, prev: dict | None):
     return ("上月自結" if prev else "上一季月均"), chg, sr.get("EPS_最近一月")
 
 
+def _stale_flags(ev: pd.DataFrame, start: str) -> pd.Series:
+    """同個股 2~30 天前已有相似標題 (bigram Jaccard ≥ STALE_SIM) → 回傳該舊標題日期字串，否則空。"""
+    flags = [""] * len(ev)
+    hist = defaultdict(list)   # stock → [(day_ordinal, bigrams, title)]
+    start_ts = pd.Timestamp(start)
+    for pos, (src, d, tw, title) in enumerate(zip(ev["source"], ev["day"], ev["tw_list"], ev["title"])):
+        if src == "重訊" or not tw:
+            continue
+        bg = _bigrams(title)
+        if not bg:
+            continue
+        o = d.toordinal()
+        if d >= start_ts:
+            for c in tw[:3]:
+                for od, obg, otitle in reversed(hist.get(c, [])):
+                    if o - od > STALE_MAX_DAYS:
+                        break
+                    if o - od >= STALE_MIN_DAYS and len(bg & obg) / len(bg | obg) >= STALE_SIM:
+                        flags[pos] = f"{pd.Timestamp.fromordinal(od):%m-%d} 已有「{otitle[:20]}」"
+                        break
+                if flags[pos]:
+                    break
+        for c in tw[:3]:
+            hist[c].append((o, bg, title))
+    return pd.Series(flags, index=ev.index)
+
+
 def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
     idx, theme_ind, theme_stock = _index(ev, mk)
     selfs = _selfreports(ev)
+    ev = ev.copy()
+    ev["stale"] = _stale_flags(ev, start)
     first_day = ev["day"].min().toordinal()
     W = WEIGHTS
     out = []
@@ -315,7 +348,20 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             else:
                 s += W["regulatory"]; direction = "空"
                 why.append(f"監管處分 (變更交易方法/處置/停止買賣) +{W['regulatory']}")
-        if "籌資進度" in r.tags.split("|") and r.source == "重訊":
+        tagset = set(r.tags.split("|"))
+        if "公開收購" in tagset:
+            if re.search(r"(進行|啟動|公告|宣布|擬|決議).{0,6}公開收購|收購條件|收購價格|公開收購.{0,10}(開始|說明書)", r.title) \
+                    and not re.search(r"延長|最後|完成|結束|進度|通知|解任|持股", r.title):
+                s += W["tender_offer"]; direction = direction or "多"; why.append(f"公開收購 +{W['tender_offer']}")
+            else:
+                s += W["tender_offer_update"]; why.append(f"公開收購進度/期間 +{W['tender_offer_update']}")
+        elif "最後過戶日" in tagset and r.source == "重訊" and re.search(r"收購|併購|合併|股份轉換|換股", r.title):
+            s += W["tender_offer_update"]; why.append(f"收購/合併最後過戶日 +{W['tender_offer_update']}")
+        if "新股上市日" in tagset and r.source == "重訊":
+            s += W["listing_day"]; why.append(f"增資/新股上市買賣日 +{W['listing_day']}")
+        if r.stale:
+            s += W["stale_news"]; why.append(f"舊聞：{r.stale} +{W['stale_news']}")
+        if "籌資進度" in tagset and r.source == "重訊":
             s += W["raise_progress"]; why.append(f"籌資進入執行階段 (代收價款/收足股款) +{W['raise_progress']}")
         tag_days = {t: _prior(idx, t, o) for t in (ttags or r.tag_list)}
         if tag_days:
