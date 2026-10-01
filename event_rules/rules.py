@@ -54,7 +54,7 @@ TAG_RULES = [
     {"tag": "新藥/藥證", "text": r"臨床|解盲|藥證|FDA|EMA|查驗登記|孤兒藥", "fields": ["研發新藥名稱或代號"]},
     {"tag": "澄清", "text": r"澄清|媒體報導|說明.{0,6}報導", "fields": ["傳播媒體名稱", "報導內容"]},
     # 監管處分：交易方式被限制 (全額交割/變更交易方法/處置/停止買賣/終止上市)，對股價影響直接
-    {"tag": "監管處分", "text": r"變更交易方法|全額交割|處置(股|有價證券|期間)|列為處置|分盤交易|停止買賣|停止交易|終止上[市櫃]|下市|打入全額|恢復(普通|一般)交易"},
+    {"tag": "監管處分", "text": r"變更交易方法|全額交割|處置(股|有價證券|期間)|列為處置|分盤交易|(?<!憑證同時)(?<!憑證)停止買賣|終止上[市櫃]買賣|下市|打入全額|恢復(普通|一般)交易"},
     {"tag": "籌資進度", "text": r"代收(及存儲)?(價|股|債)款|存儲專戶|收足(股|債)款|認股基準日|繳款"},
     {"tag": "訴訟/裁罰", "text": r"訴訟|起訴|判決|裁罰|罰鍰|檢調|搜索|調查|內線交易|掏空|違約",
      "fields": ["法律事件之當事人", "裁罰金額(元)"]},
@@ -207,6 +207,7 @@ def themes_of(title: str, body: str = "") -> dict:
 _TAG_RE = [(r["tag"], re.compile(r["text"]), r.get("fields", [])) for r in TAG_RULES]
 _NEWS_ONLY = {r["tag"] for r in TAG_RULES if r.get("scope") == "news"}
 _MOD_RE = [(r["tag"], re.compile(r["text"])) for r in MODIFIERS]
+TITLE_ONLY_MODS = {"總經數據", "公司活動"}   # 雜訊類只看標題，內文順帶提到不算
 _ENT_RE = [(k, re.compile(v)) for k, v in ENTITIES.items()]
 
 
@@ -221,7 +222,7 @@ def tag_text(title: str, body: str = "", field_names=(), source: str = "news") -
             if not (mops and t in _NEWS_ONLY) and (rx.search(title) or names.intersection(fs))]
     if not mops:
         tags += [t for t, rx, fs in _TAG_RE if t not in tags and rx.search(head) and t in BODY_OK]
-    mods = [t for t, rx in _MOD_RE if rx.search(head)]
+    mods = [t for t, rx in _MOD_RE if rx.search(title if t in TITLE_ONLY_MODS else head)]
     ents = {}
     for k, rx in _ENT_RE:
         found = sorted({m.group(0) for m in rx.finditer(f"{title}\n{body or ''}")})

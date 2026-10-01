@@ -308,7 +308,7 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                 s += W["politics_no_industry"]; why.append(f"政要新聞但無產業指向 {W['politics_no_industry']}")
             else:
                 s += W["entity"]; why.append(f"重量級對象 {'/'.join(r.ent_list)} +{W['entity']}")
-        if "監管處分" in r.tags.split("|"):
+        if "監管處分" in r.tags.split("|") and not re.search(r"繳納憑證|換發|換股|新股.{0,8}上[市櫃]買賣|減資|面額", r.title):
             if re.search(r"恢復(普通|一般)交易", r.title):
                 s += W["regulatory_restore"]; direction = direction or "多"
                 why.append(f"恢復普通交易 +{W['regulatory_restore']}")
