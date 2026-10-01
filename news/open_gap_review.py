@@ -130,8 +130,8 @@ def main() -> int:
     day = datetime.now().strftime("%Y-%m-%d")
     path = SNAP_DIR / f"開盤快照_{day}.parquet"
     df = pd.read_parquet(path) if path.exists() and "--reuse" in sys.argv else take_snapshot(day)
-    if (df["total_volume"] > 0).sum() < 100:
-        print(f"{day} 幾乎沒有成交量，非交易日或尚未開盤，略過")
+    if str(df["ts"].max())[:10] != day or (df["total_volume"] > 0).sum() < 100:
+        print(f"{day} 快照不是今天的 (最新 {df['ts'].max()})：非交易日或尚未開盤，略過")
         return 0
     rev, nonews, mkt = analyze(df, day)
     REVIEW_DIR.mkdir(parents=True, exist_ok=True)
