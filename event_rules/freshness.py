@@ -35,6 +35,7 @@ score = min(10, event_score + market_score)；stage 欄標明「事件」或「�
 """
 import argparse
 import bisect
+import re
 import glob
 import json
 import sys
@@ -66,9 +67,12 @@ WEIGHTS = {
     "theme_first": 1.5,                            # 個股×題材 首次共現
     "theme_cross": 3.0,                            # 產業×題材 罕見 (跨界)，與 theme_first 疊加
     "mod_首創": 1.5, "mod_極端": 1.5, "mod_轉折": 1.0, "mod_意外": 0.5, "mod_傳聞": -1.0,
+    "mod_供應鏈變數": 2.0, "mod_總經數據": -1.5, "mod_公司活動": -2.0,
+    "raise_big": 2.0, "raise_mid": 1.0, "subsidiary": -1.0,          # 籌資占股本 ≥20% / 10~20%；代子公司事件
+    "analyst_source": 3.0,                                           # 分析師本人發文
     "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
     "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
-    "selfreport_chg": 1.5, "selfreport_chg_big": 2.5, "selfreport_loss_runup": 1.0, "multi_source": 0.5,
+    "selfreport_chg": 1.5, "selfreport_chg_big": 3.0, "selfreport_both": 1.0, "selfreport_loss_runup": 1.0, "multi_source": 0.5,
     "mkt_stock_limit": 2.0, "mkt_stock_big": 1.0, "mkt_theme_strong": 2.0, "mkt_theme_mild": 1.0, "mkt_cap": 3.0,
 }
 COMBO_RARE_MAX, TAG_RARE_MAX, AMOUNT_BIG = 3, 12, 5e9
@@ -80,6 +84,10 @@ RUNUP_DAYS, RUNUP_PCT = 5, 15.0                    # 澄清前 5 個交易日漲
 NOVEL_GRACE_DAYS = 14                              # 題材新穎度寬限：近 14 天才開始共現的仍算「新題材」
 FOCUS_MAX_STOCKS = 3                               # 題材新穎度只看「主角明確」的文章 (台股代號 ≤3 檔)
 BASKET_DAYS, BASKET_SIZE, BASKET_MIN = 180, 15, 3
+RAISE_BIG, RAISE_MID = 20.0, 10.0                  # 籌資金額占股本 (%)：2026-09 樣本 現增中位數 10.8%、75 分位 39%
+INDUSTRY_GLOB_CAP = INDUSTRY_GLOB
+ANALYST_GLOB = "/mnt/d/mops/news/analyst/分析師發文_*.parquet"
+HEAT_GLOB = "/mnt/d/mops/news/heat/熱度快照_*.parquet"
 FX = {"TWD": 1, "USD": 32, "CNY": 4.4, "JPY": 0.21, "EUR": 35, "HKD": 4.1}
 # 彙整型文章 (盤前/盤後/週報/懶人包) 一篇帶十幾個主題，標籤與對象都不可靠 → 不評分也不計入歷史
 ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤|飆股出爐|排行榜|前\d+大|\d+大飆股|熱度爆棚"
@@ -111,6 +119,21 @@ def load_events() -> pd.DataFrame:
             "entities": n["entities"], "themes": n["themes"], "title_themes": n["title_themes"],
             "routine": False, "stance": "", "data": "", "amount_twd": float("nan"),
         }))
+    files = sorted(glob.glob(ANALYST_GLOB))
+    if files:  # 分析師本人發文 (Medium/X)：標題即文章首句；題材/對象從標題+內文判斷
+        a = pd.concat(pd.read_parquet(f) for f in files)
+        a = a[a["平台"].isin(["Medium", "X"]) & (a["語言"] == "中文")]
+        if len(a):
+            tt = [R.tag_text(t, b, source="news") for t, b in zip(a["標題"], a["內文"])]
+            th = [R.themes_of(t, b) for t, b in zip(a["標題"], a["內文"])]
+            parts.append(pd.DataFrame({
+                "source": "分析師:" + a["作者"], "id": a["連結"], "time": a["發布時間"], "title": a["標題"].str[:120],
+                "stocks": "", "tags": ["|".join(x["tags"]) for x in tt], "title_tags": ["|".join(x["tags"]) for x in tt],
+                "modifiers": ["|".join(x["modifiers"]) for x in tt],
+                "entities": [json.dumps(x["entities"], ensure_ascii=False) if x["entities"] else "" for x in tt],
+                "themes": ["|".join(x["all"]) for x in th], "title_themes": ["|".join(x["all"]) for x in th],
+                "routine": False, "stance": "", "data": "", "amount_twd": float("nan"),
+            }))
     ev = pd.concat(parts, ignore_index=True).sort_values("time").reset_index(drop=True)
     ev = ev[~ev["title"].str.contains(ROUNDUP_RE, na=False)].reset_index(drop=True)
     ev["day"] = ev["time"].dt.normalize()
@@ -149,6 +172,7 @@ class Market:
         f = sorted(glob.glob(INDUSTRY_GLOB))
         ind = pd.read_parquet(f[-1]) if f else pd.DataFrame(columns=["stock_id", "category"])
         self.industry = dict(zip(ind["stock_id"].astype(str), ind["category"]))
+        self.capital = dict(zip(ind["stock_id"].astype(str), pd.to_numeric(ind.get("capital"), errors="coerce"))) if len(ind) else {}
 
     def reaction_day(self, t: pd.Timestamp):
         """13:30 前的事件 → 當日 (若為交易日)；否則下一個交易日。尚無資料回 None。"""
@@ -304,10 +328,26 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
         if r.amount_twd == r.amount_twd and r.amount_twd >= AMOUNT_BIG:
             s += W["amount_big"]; why.append(f"金額約 {r.amount_twd / 1e8:,.0f} 億 +{W['amount_big']}")
 
-        # ---- 重訊專屬：澄清立場、自結數字、例行
+        if str(r.source).startswith("分析師"):
+            s += W["analyst_source"]; why.append(f"分析師本人發文 +{W['analyst_source']}")
+        # ---- 重訊專屬：澄清立場、自結數字、籌資占股本、例行
         if r.source == "重訊":
             s += W["mops_source"]
             data = json.loads(r.data) if r.data else {}
+            cap = mk.capital.get(r.stocks)
+            for kind, amt in (("現金增資", "發行總金額"), ("私募", "私募總金額"), ("可轉債", "發行總額"), ("公司債", "發行總額")):
+                x = data.get(kind, {})
+                if cap and x.get(amt) and x.get(amt + "_幣別", "TWD") == "TWD":
+                    ratio = x[amt] / cap * 100
+                    sub = bool(re.search(r"代.{0,6}子公司", r.title))
+                    tier = "raise_big" if ratio >= RAISE_BIG else ("raise_mid" if ratio >= RAISE_MID else "")
+                    if tier:
+                        s += W[tier]; why.append(f"{kind} {x[amt] / 1e8:,.1f} 億占股本 {ratio:.0f}% +{W[tier]}")
+                    else:
+                        why.append(f"({kind} {x[amt] / 1e8:,.1f} 億占股本 {ratio:.1f}%)")
+                    if sub:
+                        s += W["subsidiary"]; why.append(f"子公司事件 {W['subsidiary']}")
+                    break
             if r.stance == "否認":
                 ru = mk.runup(r.time, r.stocks)
                 if ru is not None and ru >= RUNUP_PCT:
@@ -328,6 +368,8 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                     detail = "、".join(f"{a}{b:+.0f}%" for a, b in chg.items())
                     if abs(v) >= SELF_CHG_BIG:
                         s += W["selfreport_chg_big"]; why.append(f"自結較{basis}：{detail} +{W['selfreport_chg_big']}")
+                        if chg.get("營收", 0) >= SELF_CHG_BIG and chg.get("獲利", 0) >= SELF_CHG_BIG:
+                            s += W["selfreport_both"]; why.append(f"營收與獲利同步大增 +{W['selfreport_both']}")
                     elif abs(v) >= SELF_CHG:
                         s += W["selfreport_chg"]; why.append(f"自結較{basis}：{detail} +{W['selfreport_chg']}")
                     else:
@@ -449,6 +491,58 @@ def assign_events(sc: pd.DataFrame) -> pd.DataFrame:
     return sc
 
 
+def add_heat(sc: pd.DataFrame) -> pd.DataFrame:
+    """熱度 0~10 (獨立指標，不加進新鮮度)：
+       媒體家數 (同事件報導的媒體數)、點閱數 (聯合/經濟 udn_pv、鉅亨 cnyes_pv)、PTT 推文數 (標題相似)、
+       分析師聚焦 (24 小時內分析師/研調提到相同題材的篇數)。"""
+    sc = sc.copy()
+    sc["heat"], sc["heat_reason"] = 0.0, ""
+    if sc.empty:
+        return sc
+    files = sorted(glob.glob(HEAT_GLOB))
+    heat = pd.concat(pd.read_parquet(f) for f in files) if files else pd.DataFrame(columns=["source", "key", "title", "value"])
+    views = {}
+    for src in ("udn_pv", "cnyes_pv"):
+        g = heat[heat["source"] == src].groupby("key")["value"].max()
+        views.update({(src, k): v for k, v in g.items()})
+    ptt = heat[heat["source"] == "ptt_stock"]
+    ptt = ptt[ptt["title"].str.contains(r"\[(?:新聞|情報)\]")].groupby("title")["value"].max()
+    ptt_bg = {t: (_bigrams(re.sub(r"^(Re: )?\[[^\]]+\]\s*", "", t)), v) for t, v in ptt.items()}
+    afiles = sorted(glob.glob(ANALYST_GLOB))
+    an = pd.concat(pd.read_parquet(f) for f in afiles) if afiles else pd.DataFrame(columns=["發布時間", "標題"])
+    an_themes = [(t, set(R.themes_of(x)["title"])) for t, x in zip(an["發布時間"], an["標題"])]
+    src_cnt = sc.groupby("event_id")["source"].transform("nunique")
+    heats, whys = [], []
+    for r, nsrc in zip(sc.itertuples(index=False), src_cnt):
+        h, why = 0.0, []
+        if nsrc >= 2:
+            pts = min(4, (nsrc - 1) * 1.5); h += pts; why.append(f"{nsrc} 家媒體 +{pts:g}")
+        v = None
+        link = str(r.id)
+        m = re.search(r"udn\.com/.*?/(\d{6,})", link)
+        if m:
+            v = views.get(("udn_pv", m[1]))
+        m2 = re.search(r"cnyes\.com/news/id/(\d+)", link)
+        if m2:
+            v = views.get(("cnyes_pv", m2[1]))
+        if v:
+            pts = 3 if v >= 10000 else 2 if v >= 3000 else 1 if v >= 1000 else 0
+            h += pts; why.append(f"點閱 {v:,.0f} +{pts}")
+        bg = _bigrams(r.title)
+        best = max((val for t, (b, val) in ptt_bg.items() if b and len(bg & b) / len(bg | b) >= 0.5), default=0)
+        if best:
+            pts = 3 if best >= 50 else 2 if best >= 20 else 1 if best >= 5 else 0
+            h += pts; why.append(f"PTT {best:.0f} 推 +{pts}")
+        th = set(_split(r.themes))
+        if th:
+            n = sum(1 for t, s in an_themes if s & th and abs((t - r.time).total_seconds()) <= 86400)
+            if n >= 2:
+                pts = 3 if n >= 5 else 1.5; h += pts; why.append(f"分析師/研調同題材 {n} 篇 +{pts:g}")
+        heats.append(round(min(10, h), 1)); whys.append("；".join(why))
+    sc["heat"], sc["heat_reason"] = heats, whys
+    return sc
+
+
 def write_review(sc: pd.DataFrame, days: int) -> list:
     """每日檢視表：當日分數前 REVIEW_TOP 名 (同標題只留最高分)。已有人填過評價的檔不覆寫。"""
     REVIEW_DIR.mkdir(parents=True, exist_ok=True)
@@ -467,11 +561,11 @@ def write_review(sc: pd.DataFrame, days: int) -> list:
         g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("event_id").head(REVIEW_TOP)
         out = pd.DataFrame({
             "報導數": g["n_reports"], "媒體數": g["n_sources"],
-            "總分": g["score"], "我的評價": "", "事件分": g["event_score"], "市場分": g["market_score"],
+            "總分": g["score"], "我的評價": "", "事件分": g["event_score"], "市場分": g["market_score"], "熱度": g["heat"],
             "階段": g["stage"], "方向": g["direction"], "時間": g["time"].dt.strftime("%m-%d %H:%M"),
             "來源": g["source"], "個股": g["stocks"].str[:40], "標題": g["title"], "事件標籤": g["tags"],
             "題材": g["themes"], "用語": g["modifiers"], "對象": g["entities"], "事件分理由": g["reasons"],
-            "市場分理由": g["market_reason"], "連結或MOPS鍵": g["id"],
+            "市場分理由": g["market_reason"], "熱度理由": g["heat_reason"], "連結或MOPS鍵": g["id"],
         })
         out.to_csv(path, index=False, encoding="utf-8-sig")
         written.append(path.name)
@@ -489,7 +583,7 @@ def main() -> int:
         a.start = str((first - pd.Timedelta(days=1)).replace(day=1).date())
     ev = load_events()
     mk = Market(pd.Timestamp(a.start))
-    sc = assign_events(score(ev, a.start, mk))
+    sc = add_heat(assign_events(score(ev, a.start, mk)))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for ym, g in sc.groupby(sc["time"].dt.strftime("%Y-%m")):
         tmp = OUT_DIR / f"新鮮度_{ym}.parquet.tmp"

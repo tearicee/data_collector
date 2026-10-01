@@ -138,7 +138,8 @@ def fmt(r, nm: dict, summ: dict | None = None) -> str:
     code = codes[0] if codes else "－"
     name = nm.get(code, "") if codes else "－"
     link = f" <{r.id}>" if str(r.id).startswith("http") else ""
-    return f"{r.time:%Y-%m-%d %H:%M:%S} <{r.event_score:.1f}> {code} {name} {r.direction or '－'} <{r.title}>{link}"
+    heat = f"|熱{r.heat:.0f}" if getattr(r, "heat", 0) and r.heat >= 3 else ""
+    return f"{r.time:%Y-%m-%d %H:%M:%S} <{r.event_score:.1f}{heat}> {code} {name} {r.direction or '－'} <{r.title}>{link}"
 
 
 def instant(dry: bool, resend_hours: int = 0, test: bool = False) -> int:
