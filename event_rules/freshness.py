@@ -360,7 +360,7 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
         if "新股上市日" in tagset and r.source == "重訊":
             s += W["listing_day"]; why.append(f"增資/新股上市買賣日 +{W['listing_day']}")
         if r.stale:
-            s += W["stale_news"]; why.append(f"舊聞：{r.stale} +{W['stale_news']}")
+            s += W["stale_news"]; why.append(f"舊聞：{r.stale} {W['stale_news']:+}")
         if "籌資進度" in tagset and r.source == "重訊":
             s += W["raise_progress"]; why.append(f"籌資進入執行階段 (代收價款/收足股款) +{W['raise_progress']}")
         tag_days = {t: _prior(idx, t, o) for t in (ttags or r.tag_list)}

@@ -285,14 +285,56 @@ def download_snapshot(session, token, dataset, params_extra=None, blackout=None)
     return status
 
 
-def download_dated(session, token, dataset, d: str, blackout=None) -> str:
+# 申報期：期末日之後這麼多天內，資料還在陸續公布，已存在的檔案可能是殘缺的，需要重抓。
+#   quarterly：年報最晚 3/31 申報（季底後 90 天）、半年報 8/14、Q1 5/15、Q3 11/14 → 取 100 天
+#   monthly  ：月營收於次月 10 日前公布（檔名日期為當月 1 號，故為 1 號之後約 40 天）→ 取 45 天
+#   daily    ：當日即完整 → 0（維持「已存在就跳過」）
+SETTLE_DAYS = {"quarterly": 100, "monthly": 45, "daily": 0}
+
+
+def is_settled(dest: Path, d: str, mode: str, now: datetime | None = None) -> bool:
+    """
+    已存在的逐期檔是否可視為完整、不必重抓。
+
+    檔案是在「申報期結束之後」下載的才算完整。在申報期內下載的檔案可能只含少數已公布的公司
+    （例：2026-06-30 季報於 07-18 下載，只有 1 家；2026-07～09 月營收於每月 2 日下載，只有零星幾家），
+    這種檔案每天最多重抓一次，直到申報期結束後再抓到一次為止。
+    """
+    if not dest.exists() or dest.stat().st_size == 0:
+        return False
+    settle_days = SETTLE_DAYS.get(mode, 0)
+    if settle_days == 0:
+        return True
+    now = now or datetime.now()
+    downloaded = datetime.fromtimestamp(dest.stat().st_mtime)
+    settled_at = datetime.fromisoformat(d) + timedelta(days=settle_days)
+    if downloaded >= settled_at:
+        return True
+    return downloaded.date() == now.date()      # 今天已經重抓過就先不再抓
+
+
+def download_dated(session, token, dataset, d: str, blackout=None, mode: str = "daily") -> str:
     dest = out_path_dated(dataset, d)
-    if dest.exists() and dest.stat().st_size > 0:
+    if is_settled(dest, d, mode):
         return "skip"
+    refreshing = dest.exists() and dest.stat().st_size > 0
     rows, status = api_get(session, token, {"dataset": dataset, "start_date": d, "end_date": d}, blackout)
     if status == "ok":
+        if refreshing:
+            try:
+                old_rows = len(pd.read_parquet(dest, columns=["stock_id"]))
+            except Exception:
+                old_rows = 0
+            if len(rows) < old_rows:
+                # 新抓的比舊的少（API 暫時異常）：保留舊檔，只更新時間戳避免同一天反覆重抓
+                dest.touch()
+                log(f"  [{dataset}] {d} 重抓結果 {len(rows):,} 列少於現有 {old_rows:,} 列，保留舊檔")
+                return "skip"
         df = save_parquet(rows, dest)
-        log(f"  [{dataset}] {d} OK  rows={len(df):,} size={dest.stat().st_size/1e6:.1f}MB")
+        tag = "重抓" if refreshing else "OK"
+        log(f"  [{dataset}] {d} {tag}  rows={len(df):,} size={dest.stat().st_size/1e6:.1f}MB")
+    elif refreshing:
+        return "skip"          # 重抓失敗或無資料：舊檔仍在，不算失敗
     return status
 
 
@@ -316,7 +358,7 @@ def run_dated(session, token, dataset, mode, days, reverse, blackout, fail_state
     log(f"---- {dataset} ({mode}) 共 {len(days)} 個候選日 ----")
     for i, dd in enumerate(days, 1):
         d = dd.isoformat()
-        status = download_dated(session, token, dataset, d, blackout)
+        status = download_dated(session, token, dataset, d, blackout, mode)
         counts[status] += 1
         if status == "fail":
             failed.append(d)

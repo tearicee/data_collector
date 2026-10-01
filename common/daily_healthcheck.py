@@ -103,11 +103,16 @@ def _raw_latest_count() -> tuple[str, int]:
     return (latest, dates[latest])
 
 
-def build_report() -> tuple[str, bool]:
-    """回傳 (報表文字, 是否有異常)。"""
+def build_report() -> tuple[str, bool, str]:
+    """回傳 (完整報表文字, 是否有異常, 只含異常項目的精簡版)。
+
+    完整版印在 stdout／log 供查閱；Discord 只送精簡版：[OK] 的心跳與資料落地明細不列，
+    只列 FAIL／STALE／WARN 與異常項目。
+    """
     now = datetime.now()
     lines: list[str] = []
     problems: list[str] = []
+    issue_lines: list[str] = []      # 非 OK 的心跳行（精簡版只列這些）
 
     lines.append(f"每日健檢摘要  {now:%Y-%m-%d %H:%M}")
     lines.append("=" * 46)
@@ -140,7 +145,10 @@ def build_report() -> tuple[str, bool]:
             problems.append(f"{job} 有 {len(failed_items)} 檔失敗: {failed_items}")
         stats_s = ("  " + json.dumps(stats, ensure_ascii=False)) if stats else ""
         cad_s = f"  ({cadence})" if cadence != "daily" else ""
-        lines.append(f"  [{mark:<5}] {job:<20} {last}{cad_s}{stats_s}")
+        line = f"  [{mark:<5}] {job:<20} {last}{cad_s}{stats_s}"
+        lines.append(line)
+        if mark != "OK ":
+            issue_lines.append(line)
 
     # ---- B. 資料落地 ----
     lines.append("\n[資料落地 (最新一天檔數)]")
@@ -186,7 +194,15 @@ def build_report() -> tuple[str, bool]:
         lines.append("異常項目: " + "; ".join(problems))
     else:
         lines.insert(0, "🟢 所有任務正常")
-    return ("\n".join(lines), has_problem)
+
+    # 精簡版（Discord）：只列異常，正常項目只寫總數
+    ok_count = len(hbs) - len(issue_lines)
+    brief = [lines[0], f"每日健檢摘要  {now:%Y-%m-%d %H:%M}", "=" * 46]
+    if issue_lines:
+        brief += ["[任務心跳：異常]", *issue_lines]
+    brief += ["", "異常項目:", *(f"  - {item}" for item in problems)] if problems else []
+    brief.append(f"（其餘 {ok_count} 個任務正常，未列出）")
+    return ("\n".join(lines), has_problem, "\n".join(brief))
 
 
 def main():
@@ -197,7 +213,7 @@ def main():
     ap.add_argument("--now", action="store_true", help="(相容用) 立即執行")
     args = ap.parse_args()
 
-    report, has_problem = build_report()
+    report, has_problem, brief = build_report()
     print(report)
 
     if args.dry:
@@ -210,7 +226,7 @@ def main():
 
     try:
         # 標題行 (帶 emoji) 不包框，其餘報表包程式碼框
-        first, rest = report.split("\n", 1)
+        first, rest = brief.split("\n", 1)
         notify_discord.post(first, code_block=False)
         notify_discord.post(rest, code_block=True)
     except Exception as e:                           # noqa: BLE001
