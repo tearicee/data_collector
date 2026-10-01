@@ -22,7 +22,18 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from dotenv import dotenv_values
+
+
+def dotenv_values(path) -> dict:   # 不依賴 python-dotenv (永豐快照用的 venv 沒裝)
+    out = {}
+    try:
+        for line in Path(path).read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
 
 DC_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(DC_ROOT))

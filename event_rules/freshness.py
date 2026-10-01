@@ -69,6 +69,7 @@ WEIGHTS = {
     "mod_首創": 1.5, "mod_極端": 1.5, "mod_轉折": 1.0, "mod_意外": 0.5, "mod_傳聞": -1.0,
     "mod_供應鏈變數": 2.0, "mod_總經數據": -1.5, "mod_公司活動": -2.0,
     "raise_big": 2.0, "raise_mid": 1.0, "subsidiary": -1.0,          # 籌資占股本 ≥20% / 10~20%；代子公司事件
+    "raise_decision": 1.5,                                           # 董事會決議辦理現增/私募/CB 本身就值得注意
     "analyst_source": 3.0,                                           # 分析師本人發文
     "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
     "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
@@ -85,6 +86,16 @@ NOVEL_GRACE_DAYS = 14                              # 題材新穎度寬限：近
 FOCUS_MAX_STOCKS = 3                               # 題材新穎度只看「主角明確」的文章 (台股代號 ≤3 檔)
 BASKET_DAYS, BASKET_SIZE, BASKET_MIN = 180, 15, 3
 RAISE_BIG, RAISE_MID = 20.0, 10.0                  # 籌資金額占股本 (%)：2026-09 樣本 現增中位數 10.8%、75 分位 39%
+RAISE_BIG_FIN, RAISE_MID_FIN = 10.0, 5.0           # 金融業股本龐大，門檻減半
+FIN_INDUSTRIES = {"金融保險業", "金融業", "證券業", "保險業"}
+# 跨界/首次共現加分只認這些「市場正在追的」題材，避免 金融/證券/文創 這類泛用詞製造假跨界
+CROSS_THEMES = {"半導體", "CoWoS/先進封裝", "先進封裝", "HBM", "ASIC", "矽光子", "矽光子/CPO", "光通訊CPO大雜燴", "玻璃基板",
+                "AI伺服器", "AI伺服器ODM", "AI", "資料中心/AIDC", "液冷", "散熱", "機器人", "人形機器人", "機器人光學", "無人機",
+                "無人機/軍工", "軍工", "低軌", "低軌衛星/太空", "太空/衛星地面設備", "spaceX", "核能", "儲能", "重電", "電網/強韌電網",
+                "記憶體", "PCB", "PCB/載板", "CCL/銅箔基板", "ABF", "輝達供應鏈", "蘋果供應鏈", "無塵室", "半導體建廠/廠務",
+                "半導體設備", "設備廠商指標", "美國設廠/亞利桑那", "電動車", "自駕/Robotaxi", "矽晶圓", "FOPLP", "第三代半導體",
+                "光罩/EUV", "量子電腦", "量子", "AI手機", "AIPC", "BBU/電源", "power", "電池", "減重藥/GLP-1", "CDMO", "傳產切入半導體/AI"}
+SUPPLY_CHAIN_CONTEXT = CROSS_THEMES | {"鋼鐵/原物料", "面板", "鋼鐵", "塑化", "航運", "太陽能", "風電"}
 INDUSTRY_GLOB_CAP = INDUSTRY_GLOB
 ANALYST_GLOB = "/mnt/d/mops/news/analyst/分析師發文_*.parquet"
 HEAT_GLOB = "/mnt/d/mops/news/heat/熱度快照_*.parquet"
@@ -306,6 +317,8 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             for c in r.tw_list:
                 ind = mk.industry.get(c, "")
                 for th in r.ttheme_list:
+                    if th not in CROSS_THEMES:
+                        continue
                     if _prior(idx, ("T", c, th), o - NOVEL_GRACE_DAYS) > 0:   # 14 天前就出現過 → 不算新
                         continue
                     since = o - min((d for d in idx.get(("T", c, th), []) if d >= o - NOVEL_GRACE_DAYS), default=o)
@@ -324,6 +337,8 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
 
         # ---- 用語、金額
         for m in _split(r.modifiers):
+            if m == "供應鏈變數" and not (str(r.source).startswith("分析師") or set(r.ttheme_list) & SUPPLY_CHAIN_CONTEXT):
+                continue   # 「改變/取代」這類詞在政治/總經新聞也常見，只有在供應鏈題材脈絡下才算
             s += W[f"mod_{m}"]; why.append(f"{m}用語 {W[f'mod_{m}']:+}")
         if r.amount_twd == r.amount_twd and r.amount_twd >= AMOUNT_BIG:
             s += W["amount_big"]; why.append(f"金額約 {r.amount_twd / 1e8:,.0f} 億 +{W['amount_big']}")
@@ -337,12 +352,16 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             cap = mk.capital.get(r.stocks)
             for kind, amt in (("現金增資", "發行總金額"), ("私募", "私募總金額"), ("可轉債", "發行總額"), ("公司債", "發行總額")):
                 x = data.get(kind, {})
+                if x and re.search(r"董事會.{0,8}決議|決議.{0,6}(辦理|發行)|定價|訂價", r.title) and not re.search(r"撤銷|取消|催繳|代收|存儲|股款|基準日", r.title):
+                    s += W["raise_decision"]; why.append(f"{kind}決議 +{W['raise_decision']}")
                 if cap and x.get(amt) and x.get(amt + "_幣別", "TWD") == "TWD":
                     ratio = x[amt] / cap * 100
                     sub = bool(re.search(r"代.{0,6}子公司", r.title))
-                    tier = "raise_big" if ratio >= RAISE_BIG else ("raise_mid" if ratio >= RAISE_MID else "")
+                    fin = mk.industry.get(r.stocks, "") in FIN_INDUSTRIES
+                    big, mid = (RAISE_BIG_FIN, RAISE_MID_FIN) if fin else (RAISE_BIG, RAISE_MID)
+                    tier = "raise_big" if ratio >= big else ("raise_mid" if ratio >= mid else "")
                     if tier:
-                        s += W[tier]; why.append(f"{kind} {x[amt] / 1e8:,.1f} 億占股本 {ratio:.0f}% +{W[tier]}")
+                        s += W[tier]; why.append(f"{kind} {x[amt] / 1e8:,.1f} 億占股本 {ratio:.0f}%{'(金融股標準)' if fin else ''} +{W[tier]}")
                     else:
                         why.append(f"({kind} {x[amt] / 1e8:,.1f} 億占股本 {ratio:.1f}%)")
                     if sub:

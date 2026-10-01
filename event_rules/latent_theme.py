@@ -6,7 +6,8 @@
 邏輯：
   1. 熱點：最近 HOT_DAYS 天內，評分理由含「跨界」(產業 × 題材罕見共現) 且 事件分 ≥ HOT_SCORE 或市場分 ≥ 2
      的事件 → 得到 (產業, 題材, 錨定股) 清單。例：鋼鐵工業 × 半導體，錨定股 大甲 2221、彰源 2030。
-  2. 候選：與錨定股同產業、最近 QUIET_DAYS 天「沒有任何新聞/重訊」、但股價已在動：
+  2. 候選：與錨定股「同業」(優先：題材概念股.csv 裡錨定股所屬的自訂分組成員；備援：證交所產業別)、
+     最近 QUIET_DAYS 天「沒有任何新聞/重訊」、但股價已在動：
        近 5 日漲幅 ≥ RET5 或 連續 2 日各漲 ≥ RET1，且 當日量比 (量 / 20 日均量) ≥ VOL_RATIO
   3. 通報並存檔 signals/潛在題材_YYYY-MM.parquet (狀態=待驗證)；--validate 回填 5/10 日後報酬與
      「之後有沒有出現同題材新聞」，用來檢驗這套邏輯的泛用性 (命中率、平均報酬)。
@@ -94,10 +95,24 @@ def detect(push: bool, dry: bool) -> int:
     names = dict(zip(info["stock_id"], info["stock_name"]))
     noisy = recent_news_stocks(today) | {c for s in sc[sc["time"] >= today - pd.Timedelta(days=QUIET_DAYS)]["stocks"]
                                         for c in str(s).split(",") if c}
+    # 同業來源：優先用我們自己的題材概念股分組 (DSL)，錨定股所屬的每個分組成員都算；備援用證交所產業別
+    groups = {}
+    for th, members in R.THEME_STOCKS.items():
+        for c in members:
+            groups.setdefault(c, set()).add(th)
     rows = []
     for industry, theme, anchors in pairs:
-        peers = [c for c, cat in ind_map.items() if cat == industry and c not in anchors and c in px.index]
-        for c in peers:
+        own = set()
+        own_groups = set()
+        for a_ in anchors:
+            for g in groups.get(a_, set()):
+                if g != theme:
+                    own_groups.add(g)
+                    own |= set(R.THEME_STOCKS[g])
+        twse = {c for c, cat in ind_map.items() if cat == industry}
+        peers = [(c, "自訂分組:" + "/".join(sorted(own_groups))[:30] if c in own else "證交所產業")
+                 for c in sorted(own | twse) if c not in anchors and c in px.index]
+        for c, how in peers:
             m = px.loc[c]
             if c in noisy or pd.isna(m["vol_ratio"]) or pd.isna(m["ret5"]) or abs(m["ret5"]) > 60:
                 continue
@@ -105,7 +120,7 @@ def detect(push: bool, dry: bool) -> int:
             if trig and m["vol_ratio"] >= VOL_RATIO:
                 rows.append({"日期": today.date(), "題材": theme, "產業": industry, "錨定股": ",".join(anchors),
                              "候選": c, "名稱": names.get(c, ""), "近5日%": round(m["ret5"], 1), "當日%": round(m["ret1"], 1),
-                             "前一日%": round(m["ret1_prev"], 1), "量比": round(m["vol_ratio"], 2), "收盤": m["close"],
+                             "前一日%": round(m["ret1_prev"], 1), "量比": round(m["vol_ratio"], 2), "收盤": m["close"], "同業來源": how,
                              "狀態": "待驗證", "5日後%": None, "10日後%": None, "之後出現同題材新聞": None})
     sig = pd.DataFrame(rows)
     print(f"熱點 {len(pairs)} 組：{[(i, t, a) for i, t, a in pairs]}；候選 {len(sig)} 檔")
@@ -113,6 +128,8 @@ def detect(push: bool, dry: bool) -> int:
         return 0
     SIG_DIR.mkdir(parents=True, exist_ok=True)
     path = SIG_DIR / f"潛在題材_{today:%Y-%m}.parquet"
+    if dry:
+        print(sig.to_string(index=False)); return 0
     old = pd.read_parquet(path) if path.exists() else pd.DataFrame()
     key = lambda d: d["日期"].astype(str) + d["候選"]
     if len(old):
@@ -122,7 +139,7 @@ def detect(push: bool, dry: bool) -> int:
     new = sig[sig["日期"].astype(str) == str(today.date())]
     lines = [f"**{today:%Y-%m-%d} 潛在題材通報**（熱點：" + "；".join(f"{i}×{t}（{','.join(a)}）" for i, t, a in pairs) + "）"]
     for r in new.sort_values("近5日%", ascending=False).head(10).itertuples():
-        lines.append(f"{r.候選} {r.名稱}｜{r.產業}→{r.題材}｜近5日 {r._7:+.1f}%、今日 {r._8:+.1f}%、量比 {r.量比}｜尚無新聞")
+        lines.append(f"{r.候選} {r.名稱}｜{r.產業}→{r.題材}｜近5日 {r._7:+.1f}%、今日 {r._8:+.1f}%、量比 {r.量比}｜{r.同業來源}｜尚無新聞")
     msg = "\n".join(lines)
     print(msg)
     if push and len(new):
