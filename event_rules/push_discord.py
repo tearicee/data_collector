@@ -169,10 +169,14 @@ def instant(dry: bool, resend_hours: int = 0, test: bool = False) -> int:
 
 def daily(dry: bool) -> int:
     sc, nm = load(), names()
-    today = pd.Timestamp.now().normalize()
-    g = sc[sc["time"] >= today - pd.Timedelta(hours=10)]  # 前一晚 14:00 後 ~ 現在
+    now = pd.Timestamp.now()
+    today = now.normalize()
+    # 08:20 盤前版：昨天 14:00 以後到現在；21:30 晚間版：今天 14:00 以後 (收盤後的重訊/新聞)
+    start = (today - pd.Timedelta(days=1) if now.hour < 12 else today) + pd.Timedelta(hours=14)
+    g = sc[sc["time"] >= start]
     g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("event_id").head(DAILY_TOP)
-    lines = [f"**{today:%Y-%m-%d} 當日總結（前 {len(g)} 名）**"]
+    label = "盤前總結（昨 14:00 起）" if now.hour < 12 else "晚間總結（今 14:00 起）"
+    lines = [f"**{now:%Y-%m-%d %H:%M} {label}，前 {len(g)} 名**"]
     for r in g.itertuples(index=False):
         lines.append(fmt(r, nm).replace(f"<{r.event_score:.1f}>", f"<{r.score:.1f}>"))
     msg = "\n".join(lines)

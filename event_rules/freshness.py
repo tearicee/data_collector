@@ -58,7 +58,7 @@ LOOKBACK = 365
 HISTORY_MIN_DAYS = 180
 
 # 低資訊量標籤：不參與稀有度計算、也不單獨構成候選
-LOW_TAGS = {"法說會", "人事異動", "金融投資", "背書保證/資金貸與", "股東會", "供應鏈連動", "機構評等", "財報", "營收"}
+LOW_TAGS = {"法說會", "人事異動", "金融投資", "背書保證/資金貸與", "股東會", "供應鏈連動", "機構評等", "財報", "營收", "籌資進度"}
 WEIGHTS = {
     "base": 2.0,
     "combo_never": 3.0, "combo_rare": 1.5,        # 標籤×對象類別：0 天 / ≤3 天
@@ -71,6 +71,9 @@ WEIGHTS = {
     "raise_big": 2.0, "raise_mid": 1.0, "subsidiary": -1.0,          # 籌資占股本 ≥20% / 10~20%；代子公司事件
     "raise_decision": 1.5,                                           # 董事會決議辦理現增/私募/CB 本身就值得注意
     "analyst_source": 3.0,                                           # 分析師本人發文
+    "regulatory": 4.0, "regulatory_restore": 2.0,                    # 變更交易方法/全額交割/處置 (方向空)；恢復普通交易 (方向多)
+    "raise_progress": 2.0,                                           # 代收價款行庫/收足股款：籌資進入執行階段
+    "politics_no_industry": -1.0,                                    # 政要新聞沒有產業指向 (純政治)
     "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
     "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
     "selfreport_chg": 1.5, "selfreport_chg_big": 3.0, "selfreport_both": 1.0, "selfreport_loss_runup": 1.0, "multi_source": 0.5,
@@ -301,7 +304,19 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             elif n <= COMBO_RARE_MAX:
                 s += W["combo_rare"]; why.append(f"「{t}×{e}」過去一年僅 {n} 天 +{W['combo_rare']}")
         if r.ent_list:
-            s += W["entity"]; why.append(f"重量級對象 {'/'.join(r.ent_list)} +{W['entity']}")
+            if r.ent_list == ["政要"] and not r.ttheme_list and not r.tw:
+                s += W["politics_no_industry"]; why.append(f"政要新聞但無產業指向 {W['politics_no_industry']}")
+            else:
+                s += W["entity"]; why.append(f"重量級對象 {'/'.join(r.ent_list)} +{W['entity']}")
+        if "監管處分" in r.tags.split("|"):
+            if re.search(r"恢復(普通|一般)交易", r.title):
+                s += W["regulatory_restore"]; direction = direction or "多"
+                why.append(f"恢復普通交易 +{W['regulatory_restore']}")
+            else:
+                s += W["regulatory"]; direction = "空"
+                why.append(f"監管處分 (變更交易方法/處置/停止買賣) +{W['regulatory']}")
+        if "籌資進度" in r.tags.split("|") and r.source == "重訊":
+            s += W["raise_progress"]; why.append(f"籌資進入執行階段 (代收價款/收足股款) +{W['raise_progress']}")
         tag_days = {t: _prior(idx, t, o) for t in (ttags or r.tag_list)}
         if tag_days:
             t, n = min(tag_days.items(), key=lambda x: x[1])
