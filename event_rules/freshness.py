@@ -60,6 +60,7 @@ HISTORY_MIN_DAYS = 180
 # 低資訊量標籤：不參與稀有度計算、也不單獨構成候選
 LOW_TAGS = {"法說會", "人事異動", "金融投資", "背書保證/資金貸與", "股東會", "供應鏈連動", "機構評等", "財報", "營收", "籌資進度", "最後過戶日"}
 STALE_MIN_DAYS, STALE_MAX_DAYS, STALE_SIM = 2, 30, 0.5
+ATTN_RECENT, ATTN_BASE, ATTN_SURGE, ATTN_HIGH, ATTN_MIN = 3, 60, 3.0, 2.0, 5   # 異常關注度：近 3 天 vs 60 天基期
 WEIGHTS = {
     "base": 2.0,
     "combo_never": 3.0, "combo_rare": 1.5,        # 標籤×對象類別：0 天 / ≤3 天
@@ -77,7 +78,7 @@ WEIGHTS = {
     "politics_no_industry": -1.0,                                    # 政要新聞沒有產業指向 (純政治)
     "tender_offer": 4.0, "tender_offer_update": 2.5,                # 公開收購 開始/條件 ；延長/進度/最後過戶
     "listing_day": 2.5,                                              # 增資/新股上市買賣日
-    "stale_news": -1.5,                                              # 舊聞：同個股 2~30 天前已有相似標題
+    "attention_surge": 2.0, "attention_high": 1.0,                   # 異常關注度 (熱度用)：近 3 天新聞數 / 過去 60 天同長度平均
     "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
     "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
     "selfreport_chg": 1.5, "selfreport_chg_big": 3.0, "selfreport_both": 1.0, "selfreport_loss_runup": 1.0, "multi_source": 0.5,
@@ -359,8 +360,6 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             s += W["tender_offer_update"]; why.append(f"收購/合併最後過戶日 +{W['tender_offer_update']}")
         if "新股上市日" in tagset and r.source == "重訊":
             s += W["listing_day"]; why.append(f"增資/新股上市買賣日 +{W['listing_day']}")
-        if r.stale:
-            s += W["stale_news"]; why.append(f"舊聞：{r.stale} {W['stale_news']:+}")
         if "籌資進度" in tagset and r.source == "重訊":
             s += W["raise_progress"]; why.append(f"籌資進入執行階段 (代收價款/收足股款) +{W['raise_progress']}")
         tag_days = {t: _prior(idx, t, o) for t in (ttags or r.tag_list)}
@@ -516,6 +515,7 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             "tags": "|".join(r.tag_list), "themes": "|".join(r.ttheme_list), "modifiers": r.modifiers,
             "entities": "|".join(r.ent_list), "reasons": "；".join(why), "market_reason": "；".join(mwhy),
             "reaction_day": rday, "history_ok": o - first_day >= HISTORY_MIN_DAYS, "id": r.id,
+            "stale": r.stale,   # 舊聞 (獨立訊號，不計入分數；與題材新穎度分開，避免互相抵銷)
         })
     return pd.DataFrame(out)
 
@@ -591,6 +591,20 @@ def add_heat(sc: pd.DataFrame) -> pd.DataFrame:
     afiles = sorted(glob.glob(ANALYST_GLOB))
     an = pd.concat(pd.read_parquet(f) for f in afiles) if afiles else pd.DataFrame(columns=["發布時間", "標題"])
     an_themes = [(t, set(R.themes_of(x)["title"])) for t, x in zip(an["發布時間"], an["標題"])]
+    # 異常關注度：該個股近 3 天事件數 / 過去 60 天每 3 天平均
+    stock_days = defaultdict(list)
+    for t, stocks in zip(sc["time"], sc["stocks"]):
+        for c in str(stocks).split(",")[:3]:
+            if c[:4].isdigit():
+                stock_days[c].append(t.toordinal())
+    stock_days = {k: sorted(v) for k, v in stock_days.items()}
+
+    def attention(c, o):
+        lst = stock_days.get(c, [])
+        recent = bisect.bisect_right(lst, o) - bisect.bisect_left(lst, o - ATTN_RECENT + 1)
+        base = bisect.bisect_left(lst, o - ATTN_RECENT + 1) - bisect.bisect_left(lst, o - ATTN_RECENT + 1 - ATTN_BASE)
+        avg = max(base / (ATTN_BASE / ATTN_RECENT), 0.5)
+        return recent, recent / avg
     src_cnt = sc.groupby("event_id")["source"].transform("nunique")
     heats, whys = [], []
     for r, nsrc in zip(sc.itertuples(index=False), src_cnt):
@@ -613,6 +627,13 @@ def add_heat(sc: pd.DataFrame) -> pd.DataFrame:
         if best:
             pts = 3 if best >= 50 else 2 if best >= 20 else 1 if best >= 5 else 0
             h += pts; why.append(f"PTT {best:.0f} 推 +{pts}")
+        codes = [c for c in str(r.stocks).split(",")[:3] if c[:4].isdigit()]
+        if codes:
+            rec, ratio = max((attention(c, r.time.toordinal()) for c in codes), key=lambda x: x[1])
+            if rec >= ATTN_MIN and ratio >= ATTN_SURGE:
+                h += WEIGHTS["attention_surge"]; why.append(f"關注度暴增 近3天 {rec} 則、{ratio:.1f} 倍 +{WEIGHTS['attention_surge']:g}")
+            elif rec >= ATTN_MIN and ratio >= ATTN_HIGH:
+                h += WEIGHTS["attention_high"]; why.append(f"關注度偏高 近3天 {rec} 則、{ratio:.1f} 倍 +{WEIGHTS['attention_high']:g}")
         th = set(_split(r.themes))
         if th:
             n = sum(1 for t, s in an_themes if s & th and abs((t - r.time).total_seconds()) <= 86400)
@@ -620,6 +641,9 @@ def add_heat(sc: pd.DataFrame) -> pd.DataFrame:
                 pts = 3 if n >= 5 else 1.5; h += pts; why.append(f"分析師/研調同題材 {n} 篇 +{pts:g}")
         heats.append(round(min(10, h), 1)); whys.append("；".join(why))
     sc["heat"], sc["heat_reason"] = heats, whys
+    # 橫斷面排名：事件分在「同一天所有事件」中的百分位 (0~100)，多頭日/空頭日可比較
+    day = sc["time"].dt.normalize()
+    sc["rank_pct"] = (sc.groupby(day)["event_score"].rank(pct=True) * 100).round(0)
     return sc
 
 
@@ -641,7 +665,7 @@ def write_review(sc: pd.DataFrame, days: int) -> list:
         g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("event_id").head(REVIEW_TOP)
         out = pd.DataFrame({
             "報導數": g["n_reports"], "媒體數": g["n_sources"],
-            "總分": g["score"], "我的評價": "", "事件分": g["event_score"], "市場分": g["market_score"], "熱度": g["heat"],
+            "總分": g["score"], "我的評價": "", "事件分": g["event_score"], "當日百分位": g["rank_pct"], "市場分": g["market_score"], "熱度": g["heat"], "舊聞": g["stale"],
             "階段": g["stage"], "方向": g["direction"], "時間": g["time"].dt.strftime("%m-%d %H:%M"),
             "來源": g["source"], "個股": g["stocks"].str[:40], "標題": g["title"], "事件標籤": g["tags"],
             "題材": g["themes"], "用語": g["modifiers"], "對象": g["entities"], "事件分理由": g["reasons"],
