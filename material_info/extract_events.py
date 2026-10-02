@@ -217,8 +217,11 @@ EXTRACTORS = [  # (標籤, 抽取函式, 主要金額欄)
 ]
 
 
-def build() -> pd.DataFrame:
+def build(months=None) -> pd.DataFrame:
+    """months：只重算這些月份 (YYYY-MM)；None = 全部。判重仍用全部資料 (連續公告要往回看)。"""
     df = fmi.classify(store.read_range())
+    if months:
+        df = df[df["發言日期"].str[:7].isin(months)]
     rows = []
     for r in df.itertuples(index=False):
         body = r.說明 or ""
@@ -255,8 +258,13 @@ def build() -> pd.DataFrame:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--show", help="列出某標籤的抽取結果")
+    ap.add_argument("--recent", type=int, default=0, help="只重算最近 N 個月 (每日流程用)；0 = 全部")
     a = ap.parse_args()
-    out = build()
+    months = None
+    if a.recent:
+        now = pd.Timestamp.now()
+        months = [(now - pd.DateOffset(months=i)).strftime("%Y-%m") for i in range(a.recent)]
+    out = build(months)
     fmi.DERIVED_DIR.mkdir(parents=True, exist_ok=True)
     for ym, g in out.groupby(out["發言日期"].str[:7]):
         path = fmi.DERIVED_DIR / f"重訊事件_{ym}.parquet"

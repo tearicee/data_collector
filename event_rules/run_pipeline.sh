@@ -22,7 +22,7 @@ cd "$DC_ROOT" || exit 1
     "$DC_ROOT/common/run_with_alert.sh" freshness_pipeline -- bash -c "
         set -e
         '$PY' material_info/filter_material_info.py | head -5
-        '$PY' material_info/extract_events.py | head -1
+        '$PY' material_info/extract_events.py --recent 2 | head -1
         '$PY' news/tag_news.py --changed
         '$PY' -m event_rules.freshness --review-days 3 --top 10
         '$PY' event_rules/push_discord.py --mode instant | tail -1

@@ -97,8 +97,11 @@ def detect(push: bool, dry: bool) -> int:
     noisy = recent_news_stocks(today) | {c for s in sc[sc["time"] >= today - pd.Timedelta(days=QUIET_DAYS)]["stocks"]
                                         for c in str(s).split(",") if c}
     # 同業來源：優先用我們自己的題材概念股分組 (DSL)，錨定股所屬的每個分組成員都算；備援用證交所產業別
+    parents_with_children = {p for t_, p in R.THEME_PARENT.items() if p != t_}
     groups = {}
     for th, members in R.THEME_STOCKS.items():
+        if th in parents_with_children:   # 母題材是子題材的聯集 (例：傳產 = 鋼鐵+化工+塑化…)，不能當同業
+            continue
         for c in members:
             groups.setdefault(c, set()).add(th)
     rows = []

@@ -69,7 +69,8 @@ WEIGHTS = {
     "theme_first": 1.5,                            # 個股×題材 首次共現
     "theme_cross": 3.0,                            # 產業×題材 罕見 (跨界)，與 theme_first 疊加
     "mod_首創": 1.5, "mod_極端": 1.5, "mod_轉折": 1.0, "mod_意外": 0.5, "mod_傳聞": -1.0,
-    "mod_供應鏈變數": 2.0, "mod_總經數據": -1.5, "mod_公司活動": -2.0,
+    "mod_供應鏈變數": 2.0, "mod_總經數據": -1.5, "mod_公司活動": -2.0, "mod_疑問句": -2.5, "mod_行情描述": -1.5,
+    "analyst_rating": -1.5,                                          # 券商目標價/評等類報導
     "raise_big": 2.0, "raise_mid": 1.0, "subsidiary": -1.0,          # 籌資占股本 ≥20% / 10~20%；代子公司事件
     "raise_decision": 1.5,                                           # 董事會決議辦理現增/私募/CB 本身就值得注意
     "analyst_source": 3.0,                                           # 分析師本人發文
@@ -109,7 +110,7 @@ ANALYST_GLOB = "/mnt/d/mops/news/analyst/分析師發文_*.parquet"
 HEAT_GLOB = "/mnt/d/mops/news/heat/熱度快照_*.parquet"
 FX = {"TWD": 1, "USD": 32, "CNY": 4.4, "JPY": 0.21, "EUR": 35, "HKD": 4.1}
 # 彙整型文章 (盤前/盤後/週報/懶人包) 一篇帶十幾個主題，標籤與對象都不可靠 → 不評分也不計入歷史
-ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤|飆股出爐|排行榜|前\d+大|\d+大飆股|熱度爆棚"
+ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤|飆股出爐|排行榜|前\d+大|\d+大飆股|熱度爆棚|台股收|台股.{0,6}\d{4,5}點|加權指數|大盤|櫃買指數|集中市場"
 
 
 def _split(s) -> list:
@@ -323,6 +324,9 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
     for r in ev[ev["time"] >= pd.Timestamp(start)].itertuples(index=False):
         if not r.tag_list and not r.ttheme_list:
             continue
+        codes_all = [c for c in r.stock_list if c[:2].isdigit()]
+        if codes_all and all(c.startswith("00") for c in codes_all):
+            continue   # 只有 ETF 代號的新聞 (ETF 配息/主題介紹) 不評分
         if r.source != "重訊" and r.tag_list and set(r.tag_list) <= NEWS_SKIP_TAGS and not r.ttheme_list:
             continue
         o = r.day.toordinal()
@@ -396,9 +400,14 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                     why.append(f"跨界：{ind}在「{th}」新聞中僅占 {share:.1%} +{W['theme_cross']}")
 
         # ---- 用語、金額
+        rating = "機構評等" in r.tags.split("|") and r.source != "重訊"
+        if rating:
+            s += W["analyst_rating"]; why.append(f"券商目標價/評等報導 {W['analyst_rating']}")
         for m in _split(r.modifiers):
-            if m == "供應鏈變數" and not (str(r.source).startswith("分析師") or set(r.ttheme_list) & SUPPLY_CHAIN_CONTEXT):
-                continue   # 「改變/取代」這類詞在政治/總經新聞也常見，只有在供應鏈題材脈絡下才算
+            if m == "供應鏈變數" and (rating or not (str(r.source).startswith("分析師") or set(r.ttheme_list) & SUPPLY_CHAIN_CONTEXT)):
+                continue   # 「改變/取代/低於預期」在政治、總經、券商評等新聞也常見，只有在供應鏈題材脈絡下才算
+            if m in ("疑問句", "行情描述") and r.source == "重訊":
+                continue
             s += W[f"mod_{m}"]; why.append(f"{m}用語 {W[f'mod_{m}']:+}")
         if r.amount_twd == r.amount_twd and r.amount_twd >= AMOUNT_BIG:
             s += W["amount_big"]; why.append(f"金額約 {r.amount_twd / 1e8:,.0f} 億 +{W['amount_big']}")
