@@ -234,9 +234,10 @@ def _index(ev: pd.DataFrame, mk: Market):
         for t in tags:
             for s in stocks:
                 days[("S", s, t)].add(o)
-        for s in tw:
-            for th in themes:                      # 個股×題材：內文提過也算「出現過」
-                days[("T", s, th)].add(o)
+        if len(tw) <= FOCUS_MAX_STOCKS:
+            for s in tw:
+                for th in tthemes:                 # 個股×題材：要「標題層級」且該股是主角才算出現過
+                    days[("T", s, th)].add(o)      # (全文匯入後，內文順帶提到的題材太多，會讓新穎度失效)
         if tw:
             for t in ttags:                        # 標籤稀有度：只看台股事件、標籤須在標題/主旨
                 days[t].add(o)
