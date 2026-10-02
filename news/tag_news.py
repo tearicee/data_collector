@@ -28,7 +28,7 @@ TAGGED_DIR = store.BASE_DIR / "tagged"
 STOCK_INFO = "/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet"
 AMBIGUOUS = set("大陸 世界 數字 安心 全家 鳳凰 三星 東森 傳奇 互動 介面 建國 大中 大樹 天宇 乾坤 光譜 綠電 綠能 思源 永信 "
                 "國產 全新 大量 統一 精華 聯合 亞洲 中華 第一 新產 台灣 日友 巨大 櫻花 同協 長虹 富強 鼎新 優美 和立 新華 "
-                "再生 南港 中石化 台船 力信 大同 華新 信義 太子 世紀 元山 普安 中聯 上奇 能率 高技 立康 百一 工信 順天 雙喜 佳總 青雲 金橋".split())
+                "全國 再生 南港 中石化 台船 力信 大同 華新 信義 太子 世紀 元山 普安 中聯 上奇 能率 高技 立康 百一 工信 順天 雙喜 佳總 青雲 金橋".split())
 
 
 def load_names() -> dict:

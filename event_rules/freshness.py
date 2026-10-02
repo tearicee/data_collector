@@ -110,7 +110,7 @@ ANALYST_GLOB = "/mnt/d/mops/news/analyst/分析師發文_*.parquet"
 HEAT_GLOB = "/mnt/d/mops/news/heat/熱度快照_*.parquet"
 FX = {"TWD": 1, "USD": 32, "CNY": 4.4, "JPY": 0.21, "EUR": 35, "HKD": 4.1}
 # 彙整型文章 (盤前/盤後/週報/懶人包) 一篇帶十幾個主題，標籤與對象都不可靠 → 不評分也不計入歷史
-ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤|飆股出爐|排行榜|前\d+大|\d+大飆股|熱度爆棚|台股收|台股.{0,6}\d{4,5}點|加權指數|大盤|櫃買指數|集中市場"
+ROUNDUP_RE = r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤|飆股出爐|排行榜|前\d+大|\d+大飆股|熱度爆棚|台股收|台股.{0,6}\d{4,5}點|加權指數|大盤|櫃買指數|集中市場|晨訊|晨報|日報】|投顧|新名單|處置.{0,6}名單|抓去關"
 
 
 def _split(s) -> list:
@@ -193,6 +193,11 @@ class Market:
         ind = pd.read_parquet(f[-1]) if f else pd.DataFrame(columns=["stock_id", "category"])
         self.industry = dict(zip(ind["stock_id"].astype(str), ind["category"]))
         self.capital = dict(zip(ind["stock_id"].astype(str), pd.to_numeric(ind.get("capital"), errors="coerce"))) if len(ind) else {}
+        try:
+            si = pd.read_parquet("/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet", columns=["stock_id", "stock_name"])
+            self.names = {c: re.sub(r"[*]|-KY|-創$|創$", "", n) for c, n in zip(si["stock_id"], si["stock_name"])}
+        except Exception:  # noqa: BLE001
+            self.names = {}
 
     def reaction_day(self, t: pd.Timestamp):
         """13:30 前的事件 → 當日 (若為交易日)；否則下一個交易日。尚無資料回 None。"""
@@ -380,6 +385,8 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
         if r.ttheme_list and 0 < len(r.tw_list) <= FOCUS_MAX_STOCKS:
             best = None
             for c in r.tw_list:
+                if r.source != "重訊" and c not in r.title and mk.names.get(c, "\0") not in r.title:
+                    continue   # 題材新穎/跨界只給「標題點名」的個股，內文帶到的不算
                 ind = mk.industry.get(c, "")
                 for th in r.ttheme_list:
                     if th not in CROSS_THEMES:
