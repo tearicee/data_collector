@@ -13,7 +13,7 @@
       D:/mops/news/review/跳空檢討_YYYY-MM-DD.csv、無新聞大漲跌_YYYY-MM-DD.csv
       Discord 一則當日摘要 (經 guarded_send)
 執行：daily_script/.venv-intraday/bin/python news/open_gap_review.py   (shioaji 只裝在那個 venv)
-金鑰：SJ_API_KEY / SJ_SEC_KEY，依序找 data_collector/.env、daily_script/.env、daily_notify.old/disposal_intraday/.env
+金鑰：SJ_API_KEY / SJ_SEC_KEY，讀 daily_script/src/notifiers/disposal_intraday/.env (其次 daily_script/.env)
 """
 import glob
 import json
@@ -33,8 +33,9 @@ REVIEW_DIR = Path("/mnt/d/mops/news/review")
 SCORED = "/mnt/d/mops/news/scored/新鮮度_*.parquet"
 INDUSTRY = "/mnt/d/mops/MopsIndustry/*/MopsIndustry_*.parquet"
 STOCK_INFO = "/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet"
-ENV_FILES = [DC_ROOT / ".env", Path("/home/tearicee/daily_script/.env"),
-             Path("/home/tearicee/daily_notify.old/disposal_intraday/.env")]
+# 永豐金鑰與 shioaji 都在 daily_script (盤中處置模組)；不再讀已淘汰的 daily_notify.old
+ENV_FILES = [Path("/home/tearicee/daily_script/src/notifiers/disposal_intraday/.env"),
+             Path("/home/tearicee/daily_script/.env")]
 GAP_MIN, GAP_SIGMA, SCORE_HIT = 3.0, 2.0, 7.0
 
 
