@@ -119,6 +119,8 @@ class ConvertTest(unittest.TestCase):
         row = out[out["stock_id"] == STOCKS[0]].iloc[0]
         self.assertEqual(row["holdings"], SHARES[0] / 1000)             # 股 → 張
         self.assertEqual(row["weight(%)"], round(row["weight(%)"], 2))  # 權重 2 位小數
+        text = (self.env.out / "20261002_00999A.csv").read_text(encoding="utf-8-sig")
+        self.assertIn(",TX,1.50,0.012,", text)                          # 固定兩位小數；口數也 /1000
         self.assertIn("TX", set(out["stock_id"]))                       # 非個股列照留
         self.assertIn("NVDA US", set(out["stock_id"]))
 

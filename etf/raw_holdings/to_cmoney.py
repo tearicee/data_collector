@@ -144,7 +144,8 @@ def to_cmoney(df: pd.DataFrame, etf: str, date: str) -> pd.DataFrame:
     out = pd.DataFrame({
         "date": date,
         "stock_id": df["stock_id"],
-        "weight(%)": df["weight"].round(2),
+        # CMoney 的權重固定兩位小數 (3.40)，缺值留空
+        "weight(%)": df["weight"].map(lambda w: "" if pd.isna(w) else f"{w:.2f}"),
         "holdings": (df["shares"] / 1000).round(3),
         "etf": etf,
     })
@@ -261,6 +262,7 @@ def validate(raw_dir: Path, out_dir: Path, price_dir: Path, since: str) -> int:
         cm = cm[cm["stock_id"].str.match(STOCK_RE)].set_index("stock_id")
         mine = to_cmoney(df, etf, fit.date)
         mine = mine[mine["stock_id"].str.match(STOCK_RE)].drop_duplicates("stock_id").set_index("stock_id")
+        mine["weight(%)"] = pd.to_numeric(mine["weight(%)"], errors="coerce")
         common = cm.index.intersection(mine.index)
         same_ids = len(cm.index.symmetric_difference(mine.index)) == 0
         h_ok = len(common) > 0 and float((cm.loc[common, "holdings"] - mine.loc[common, "holdings"]).abs().max()) <= 0.0011
