@@ -6,7 +6,8 @@
 持股 server render 於多個 div.fund_card，各有 card-header(股票/期貨/債券) + 表格:
   股票: 代號/名稱/股數/持股權重   期貨: 期貨代號/名稱/契約年月/口數/持股權重
 代號帶交易所後綴(如『3017 TT』)取第一段；跳過摘要卡與『X合計』列。
-免 ETF 清單映射 (URL 帶代號)。指定日無資料往前回退。
+免 ETF 清單映射 (URL 帶代號)。DataDate 是清單適用日 (= 持股基準日的下一個交易日)，
+故先查下一個交易日，查無資料才從指定日往前回退。
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta
 import lxml.html
 import pandas as pd
 
-from base import IssuerAdapter, register
+from base import IssuerAdapter, forward_dates, register
 
 BASE = "https://www.tsit.com.tw/ETF/Home/Pcf"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0",
@@ -83,8 +84,10 @@ class TaishinAdapter(IssuerAdapter):
 
     def fetch(self, fund_code: str, date: str) -> pd.DataFrame:
         base = datetime.strptime(date, "%Y%m%d")
-        for back in range(MAX_LOOKBACK + 1):
-            d = base - timedelta(days=back)
+        # 清單以「適用日」為準: 先查下一個交易日 (當日收盤後的持股)，沒有才從今天往前回退
+        tries = [datetime.strptime(d, "%Y%m%d") for d in forward_dates(date)]
+        tries += [base - timedelta(days=back) for back in range(MAX_LOOKBACK + 1)]
+        for d in tries:
             r = self.session.get(f"{BASE}/{fund_code}",
                                  params={"FundType": "ALL",
                                          "DataDate": d.strftime("%Y-%m-%d")},

@@ -62,6 +62,22 @@ def build_session() -> requests.Session:
     return session
 
 
+def forward_dates(date: str, days: int = 5) -> list[str]:
+    """date (YYYYMMDD) 之後 `days` 個曆日內的平日，由近到遠。
+
+    以「申購買回清單適用日」提供資料的投信 (台新/新光/中信)，T 日收盤後的持股掛在下一個
+    交易日的清單上；只查今天會拿到前一交易日的持股。國定假日查無資料，由呼叫端往下一天試。
+    """
+    from datetime import datetime, timedelta
+    base = datetime.strptime(date, "%Y%m%d")
+    out = []
+    for k in range(1, days + 1):
+        d = base + timedelta(days=k)
+        if d.weekday() < 5:
+            out.append(d.strftime("%Y%m%d"))
+    return out
+
+
 class IssuerAdapter(ABC):
     """單一投信的持股 adapter 基底。"""
 
