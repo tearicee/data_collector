@@ -7,7 +7,7 @@ data_collector/
 ├── .venv/        ← 唯一共用虛擬環境 (requests / pandas / pyarrow / python-dotenv / openpyxl)
 ├── nbim/         ← 挪威主權基金 NBIM 全球持股
 ├── taifex/       ← 期交所 TAIFEX 每日期貨/選擇權成交
-├── etf/          ← ETF 每日持股爬蟲 (CMoney)
+├── etf/          ← ETF 每日持股 (投信官網原始持股 → CMoney 格式)
 └── finmind/      ← FinMind 台股逐筆 / 期貨選擇權逐筆 / 分點 (獨立 git repo)
 ```
 
@@ -51,17 +51,22 @@ data_collector/
 
 ## 📁 etf/ — ETF 每日持股爬蟲
 
-從 CMoney API 爬取 25 支熱門 ETF 的每日持股明細。**每天 18:55 自動執行 (隨機延遲 0~10 分) + 同步 Google Drive**。
+從各投信官網抓 ETF 每日持股，再轉成原本 CMoney 爬蟲的檔案格式供下游使用。**每天 18:55 自動執行 (約 20:40 再跑第二輪補晚公告者) + 同步 Google Drive**。
+
+> 2026-10 起 CMoney 的 API 改為需要驗證 (回 `Auth Failed`)，`etf_crawler.py` 已不在排程內。
 
 | 檔案 | 用途 |
 |---|---|
-| `etf_crawler.py` | 爬取 25 支 ETF 持股 (權重/張數)，每支間隔隨機 9~13 秒、含重試與補抓；`--now` 可跳過隨機延遲手動測試 |
-| `run_crawler.sh` | cron 啟動腳本：隨機延遲 → 爬蟲 → 呼叫備份同步 |
+| `raw_holdings/run_raw.py` | 各投信官網原始持股 (一家一個 adapter)，存 `D:/etf_daily_holdings_raw/<發行商>/` |
+| `raw_holdings/to_cmoney.py` | 把投信原始持股轉成 CMoney 格式寫到 `D:/etf_daily_holdings/data/`；持股基準日由內容判定 (股數×收盤價重算權重)，不採用投信檔名日期；`--validate` 可與 CMoney 原檔比對 |
+| `etf_crawler.py` | (停用) CMoney 持股爬蟲，保留供參考 |
+| `run_crawler.sh` | cron 啟動腳本：基金主檔 → 投信持股 → 轉檔 (兩輪) → 備份同步 |
 | `backup_to_gdrive.sh` | rclone 將 `/mnt/d/etf_daily_holdings/data/` 同步到 `gdrive:etf_daily_holdings/` |
 | `ETF持股爬蟲.ipynb` | 開發用 notebook (原型參考) |
 | `etf2.zip` | 早期封存 (參考用) |
 
-**資料存放**：`D:/etf_daily_holdings/data/`（每支 ETF 每日一檔 `<日期>_<代號>.csv`）→ 同步至 `gdrive:etf_daily_holdings/`。
+**資料存放**：`D:/etf_daily_holdings/data/`（每支 ETF 每日一檔 `<持股基準日>_<代號>.csv`，欄位 `date, stock_id, weight(%), holdings(張), etf`）→ 同步至 `gdrive:etf_daily_holdings/`。
+20260930 (含) 以前為 CMoney 原檔；之後由投信資料轉出，只含判定得出基準日的 ETF (國內個股不足 8 檔的槓桿/反向/海外/債券型不轉)，且沒有現金列、期貨代號不帶合約月份。
 
 ---
 
@@ -144,7 +149,7 @@ data_collector/
 | 時間 | 工作 |
 |---|---|
 | 06:00 每天 | `taifex/run_taifex_daily.sh` — 期交所期貨+選擇權下載 + 同步雲端 |
-| 18:55 週一~五 | `etf/run_crawler.sh` — ETF 持股爬蟲 (隨機延遲 0~10 分) + 同步雲端 |
+| 18:55 週一~五 | `etf/run_crawler.sh` — 投信 ETF 持股 + 轉 CMoney 格式 (18:55、20:40 兩輪) + 同步雲端 |
 | 07:00~23:50 每 10 分 / 07:20 每天 | `material_info/run_material_info.sh poll` / `daily` — 重大訊息輪詢 / 回掃對帳 (僅存 D 槽) |
 | 全天每 15 分 | `news/run_news.sh` — 財經新聞輪詢 (僅存 D 槽) |
 | 07:40/13:40/18:40/22:40 | `event_rules/run_pipeline.sh` — 重訊+新聞標籤與新鮮度評分 |

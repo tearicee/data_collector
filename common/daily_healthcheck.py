@@ -153,9 +153,9 @@ def build_report() -> tuple[str, bool, str]:
     # ---- B. 資料落地 ----
     lines.append("\n[資料落地 (最新一天檔數)]")
     cm_day, cm_n = _latest_day_count(ETF_DATA)
-    lines.append(f"  CMoney 持股      {cm_day}  {cm_n} 檔")
+    lines.append(f"  ETF 持股(投信轉檔) {cm_day}  {cm_n} 檔")
     if cm_n == 0:
-        problems.append("CMoney 無任何資料")
+        problems.append("ETF 持股 (etf_daily_holdings/data) 無任何資料")
 
     raw_day, raw_n = _raw_latest_count()
     lines.append(f"  投信原始持股      {raw_day}  {raw_n} 檔")
