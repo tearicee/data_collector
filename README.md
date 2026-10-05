@@ -60,13 +60,21 @@ data_collector/
 | `raw_holdings/run_raw.py` | 各投信官網原始持股 (一家一個 adapter)，存 `D:/etf_daily_holdings_raw/<發行商>/` |
 | `raw_holdings/to_cmoney.py` | 把投信原始持股轉成 CMoney 格式寫到 `D:/etf_daily_holdings/data/`；持股基準日由內容判定 (股數×收盤價重算權重)，不採用投信檔名日期；`--validate` 可與 CMoney 原檔比對 |
 | `etf_crawler.py` | (停用) CMoney 持股爬蟲，保留供參考 |
-| `run_crawler.sh` | cron 啟動腳本：基金主檔 → 投信持股 → 轉檔 (兩輪) → 備份同步 |
+| `run_crawler.sh` | cron 啟動腳本：基金主檔 → 投信持股 → 轉檔 (兩輪) → 申購買回清單 → 備份同步 |
+| `pcf/collect.py` | 前 50 大 ETF 的**每日申購贖回** (淨增減單位數/已發行單位數/淨值/淨資產) 與**每日成分**，存 `D:/etf_pcf/`；`--since/--until` 回補、`--verify <日期>` 重抓與資料集逐列比對 |
+| `pcf/sources.py` | 七家投信 (元大/國泰/富邦/復華/統一/群益/中信) 申購買回清單的擷取，重用 `raw_holdings` 的 adapter |
+| `pcf/store.py` | `etf_pcf` 資料集的欄位、讀寫與**日期欄位的意義** (讀資料前先看開頭說明) |
+| `pcf/import_history.py` | 匯入歷史壓縮檔 (2003 年起)；`--check` 比對資料集與壓縮檔 |
+| `pcf/universe.csv` | 追蹤清單 (代號/投信/市場)，要加減檔數改這裡 |
 | `backup_to_gdrive.sh` | rclone 將 `/mnt/d/etf_daily_holdings/data/` 同步到 `gdrive:etf_daily_holdings/` |
 | `ETF持股爬蟲.ipynb` | 開發用 notebook (原型參考) |
 | `etf2.zip` | 早期封存 (參考用) |
 
 **資料存放**：`D:/etf_daily_holdings/data/`（每支 ETF 每日一檔 `<持股基準日>_<代號>.csv`，欄位 `date, stock_id, weight(%), holdings(張), etf`）→ 同步至 `gdrive:etf_daily_holdings/`。
 20260930 (含) 以前為 CMoney 原檔；之後由投信資料轉出，只含判定得出基準日的 ETF (國內個股不足 8 檔的槓桿/反向/海外/債券型不轉)，且沒有現金列、期貨代號不帶合約月份。
+
+**申購買回清單資料集**：`D:/etf_pcf/creation_redemption.parquet`（每檔每日一列）與 `D:/etf_pcf/constituents/<代號>.parquet`（每檔一張長表），歷史自各檔成立日起（0050 為 2003-06-25），原始壓縮檔在 `D:/etf_pcf/source/`。
+⚠️ 「交易日」欄在各投信、兩張表的意義不同（多數是清單公告日，內容是前一交易日的數字）；跨投信比較、對價格、算流量請用「資料基準日」欄。完整說明在 `etf/pcf/store.py` 開頭。
 
 ---
 
