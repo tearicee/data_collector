@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -199,6 +199,19 @@ class FakeSource(sources.Source):
         pass
 
 
+class SameDaySource(FakeSource):
+    """以資料日為鍵的來源 (沒有「明天」的資料)；weights 可指定某天的權重。"""
+    summary_forward = holdings_forward = False
+    weights: dict = {}
+
+    def holdings(self, code, day):
+        type(self).calls.append(("h", code, day))
+        if day not in self.data:
+            return None
+        w = self.weights.get(day, 50.0 if day <= "2026-10-01" else 51.0)
+        return Holdings(day, day, sources.SRC_HOLDINGS, [sources.row("股票", "2330", "台積電", 1, None, w)])
+
+
 class CollectTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -213,10 +226,11 @@ class CollectTest(unittest.TestCase):
         store.load_universe, store.price_days = self._universe, self._price_days
         self.tmp.cleanup()
 
-    def run_collect(self, data, today="2026-10-02", **kw):
+    def run_collect(self, data, today="2026-10-02", hour=21, source=None, **kw):
+        source = source or FakeSource
         FakeSource.data = data
-        return collect.collect(self.root, today=date.fromisoformat(today), sleep=0,
-                               sources={"元大": FakeSource}, verbose=False, **kw)
+        return collect.collect(self.root, now=datetime.fromisoformat(f"{today}T{hour:02d}:00"), sleep=0,
+                               sources={"元大": source}, verbose=False, **kw)
 
     def test_fills_recent_gaps_and_takes_next_trading_days_list(self):
         # 10/02 (五) 晚上: 補 9/29~10/02，並抓到公告日 10/05 (一) 的清單就停
@@ -263,8 +277,38 @@ class CollectTest(unittest.TestCase):
             def summary(self, code, day):
                 raise RuntimeError("網站掛了")
         FakeSource.data = {}
-        stats = collect.collect(self.root, today=date(2026, 10, 2), sleep=0, sources={"元大": Broken}, verbose=False)
+        stats = self.run_collect({}, source=Broken)
         self.assertEqual(stats["failed"], ["0050"])
+
+    def test_days_fetched_before_a_failure_are_kept(self):
+        class FailsOnLastDay(FakeSource):
+            def holdings(self, code, day):
+                if day == "2026-10-02":
+                    raise RuntimeError("逾時")
+                return super().holdings(code, day)
+        stats = self.run_collect({d: 1 for d in DAYS}, source=FailsOnLastDay)
+        self.assertEqual(stats["failed"], ["0050"])
+        self.assertEqual(sorted(store.load_constituents("0050", self.root)["交易日"].unique()),
+                         ["2026-09-29", "2026-09-30", "2026-10-01"])
+
+    def test_same_day_keyed_source_waits_until_evening_for_today(self):
+        # 國泰持股明細這類以資料日為鍵的來源，盤中查當天會拿到前一天的複本
+        self.run_collect({d: 1 for d in DAYS}, hour=9, source=SameDaySource)
+        self.assertNotIn(("h", "0050", "2026-10-02"), SameDaySource.calls)
+        self.assertEqual(store.load_constituents("0050", self.root)["交易日"].max(), "2026-10-01")
+        self.run_collect({d: 1 for d in DAYS}, hour=21, source=SameDaySource)
+        self.assertEqual(store.load_constituents("0050", self.root)["交易日"].max(), "2026-10-02")
+
+    def test_todays_copy_of_previous_day_is_not_stored(self):
+        SameDaySource.weights = {"2026-10-02": 50.0}                         # 與 10/01 相同 = 網站還沒更新
+        try:
+            self.run_collect({d: 1 for d in DAYS}, hour=21, source=SameDaySource)
+            self.assertEqual(store.load_constituents("0050", self.root)["交易日"].max(), "2026-10-01")
+            # 隔天再跑: 10/02 已是過去的日子，照收 (海外假期時連續兩天相同是真的)
+            self.run_collect({d: 1 for d in DAYS}, today="2026-10-05", hour=21, source=SameDaySource)
+            self.assertIn("2026-10-02", set(store.load_constituents("0050", self.root)["交易日"]))
+        finally:
+            SameDaySource.weights = {}
 
     def test_explicit_range_backfills_only_that_range(self):
         self.run_collect({d: 1 for d in DAYS}, since="2026-09-29", until="2026-09-30")

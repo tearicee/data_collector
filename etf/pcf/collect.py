@@ -10,6 +10,10 @@
      「資料基準日」欄才是今天)。富邦以資料日為鍵，沒有這一步。
 寫入以 (代號, 交易日) 為鍵，可重複執行；已有的日子不會再查。
 
+「已有的日子不會再查」代表存進去的必須是定稿。以資料日為鍵的來源在盤中查當天，網站會先回
+前一天的複本 (實測國泰持股明細: 2026-10-05 09 時查到的 10/05 與 10/02 股數、權重全同)，
+所以當天的資料要 SAME_DAY_HOUR 點以後才查，而且內容與前一個已存日完全相同就不收，隔天再補。
+
 用法:
   python pcf/collect.py                                   # 每日收集 (排程用)
   python pcf/collect.py --since 2026-10-01 --until 2026-10-05   # 回補指定區間 (已有的日子略過)
@@ -32,6 +36,7 @@ from sources import SOURCES, Holdings, Summary  # noqa: E402
 BACK_DAYS = 7          # 往回補缺的曆日數
 FORWARD_DAYS = 6       # 往後找下一個交易日的曆日數 (涵蓋連假前一晚)
 FORWARD_MISSES = 2     # 往後連續幾個平日查無資料就停 (清單還沒公告；隔天會當成缺漏補上)
+SAME_DAY_HOUR = 17     # 以資料日為鍵的來源 (國泰/復華持股明細、富邦)，當天的資料幾點以後才查
 SLEEP = 1.0            # 每查一個 (代號, 日期) 後的間隔秒數
 
 
@@ -88,6 +93,21 @@ def constituent_frame(etf: pd.Series, h: Holdings, cal: store.Calendar) -> pd.Da
     return store.normalize_constituents(df)
 
 
+def _latest_before(stored: pd.DataFrame, day: str) -> pd.DataFrame:
+    """資料集裡早於 day 的最近一個交易日的成分列。"""
+    earlier = stored.loc[stored["交易日"] < day, "交易日"]
+    return stored[stored["交易日"] == earlier.max()] if len(earlier) else stored.iloc[0:0]
+
+
+def _same_holdings(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    """兩天的成分是否完全相同 (代碼、數量、權重)。權重隨股價每天變，全同代表網站還沒更新。"""
+    if len(a) == 0 or len(a) != len(b):
+        return False
+    cols = ["類別", "成分代碼", "數量", "權重(%)"]
+    key = lambda df: sorted(map(tuple, df[cols].astype("string").fillna("").to_numpy()))   # noqa: E731
+    return key(a) == key(b)
+
+
 def _universe(codes: str | None) -> pd.DataFrame:
     u = store.load_universe()
     if codes:
@@ -101,8 +121,10 @@ def _universe(codes: str | None) -> pd.DataFrame:
 
 def collect(root: Path | None = None, codes: str | None = None, since: str | None = None,
             until: str | None = None, dry_run: bool = False, sleep: float = SLEEP,
-            today: date | None = None, sources: dict | None = None, verbose: bool = True) -> dict:
-    today = today or date.today()
+            now: datetime | None = None, sources: dict | None = None, verbose: bool = True) -> dict:
+    now = now or datetime.now()
+    today, today_str = now.date(), now.date().isoformat()
+    same_day_ready = now.hour >= SAME_DAY_HOUR
     sources = sources or SOURCES
     u = _universe(codes)
     cal = store.calendar(root)
@@ -121,10 +143,11 @@ def collect(root: Path | None = None, codes: str | None = None, since: str | Non
         try:
             for _, etf in group.iterrows():
                 code = etf["代號"]
+                frames: list[pd.DataFrame] = []
                 try:
                     have_s = s_have.setdefault(code, set())
-                    have_h = set(store.load_constituents(code, root)["交易日"].dropna().unique())
-                    frames: list[pd.DataFrame] = []
+                    stored = store.load_constituents(code, root)
+                    have_h = set(stored["交易日"].dropna().unique())
 
                     def fetch(day: str, want_s: bool, want_h: bool) -> bool:
                         """查一天；有新資料回 True。"""
@@ -138,16 +161,27 @@ def collect(root: Path | None = None, codes: str | None = None, since: str | Non
                         if want_h:
                             h = src.holdings(code, day)
                             if h and h.trade_day not in have_h:
-                                frames.append(constituent_frame(etf, h, cal))
-                                have_h.add(h.trade_day)
-                                got = True
+                                frame = constituent_frame(etf, h, cal)
+                                known = pd.concat([stored, *frames], ignore_index=True)     # 含本次剛抓到的
+                                if (not src.holdings_forward and h.trade_day >= today_str
+                                        and _same_holdings(frame, _latest_before(known, h.trade_day))):
+                                    print(f"[pcf] {issuer} {code} {h.trade_day}: 成分與前一個已存日完全相同，"
+                                          "視為尚未更新，本次不收", file=sys.stderr)
+                                else:
+                                    frames.append(frame)
+                                    have_h.add(h.trade_day)
+                                    got = True
                         stats["queried"] += 1
                         time.sleep(sleep)
                         return got
 
                     for day in past:
-                        if day not in have_s or day not in have_h:
-                            fetch(day, day not in have_s, day not in have_h)
+                        # 當天的資料: 公告日為鍵的隨時可查 (前一晚就公告了)；資料日為鍵的要等收盤後
+                        open_s = day < today_str or src.summary_forward or same_day_ready
+                        open_h = day < today_str or src.holdings_forward or same_day_ready
+                        want_s, want_h = open_s and day not in have_s, open_h and day not in have_h
+                        if want_s or want_h:
+                            fetch(day, want_s, want_h)
                     if src.summary_forward or src.holdings_forward:
                         misses = 0
                         for day in future:                      # 找到下一個交易日的清單就停
@@ -159,16 +193,16 @@ def collect(root: Path | None = None, codes: str | None = None, since: str | Non
                             misses += 1
                             if misses >= FORWARD_MISSES:
                                 break
-                    if frames:
-                        n = len(frames)
-                        if not dry_run:
-                            n = store.upsert_constituents(code, pd.concat(frames, ignore_index=True), root)
-                        stats["constituent_days_new"] += n
                     if have_s:
                         stats["latest"][code] = max(have_s)
                 except Exception as e:                          # noqa: BLE001
                     stats["failed"].append(code)
                     print(f"[pcf][error] {issuer} {code}: {type(e).__name__}: {e}", file=sys.stderr)
+                if frames:                                      # 中途失敗也把已抓到的日子存起來
+                    n = len(frames)
+                    if not dry_run:
+                        n = store.upsert_constituents(code, pd.concat(frames, ignore_index=True), root)
+                    stats["constituent_days_new"] += n
         finally:
             src.close()
         if new_rows:
