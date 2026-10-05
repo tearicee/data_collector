@@ -7,7 +7,7 @@
 #   3. raw_holdings/to_cmoney.py    轉成 CMoney 格式寫到 etf_daily_holdings/data (下游讀這裡)
 #   4. 等到 SECOND_PASS_AT 再跑一輪 2+3，補上較晚公告的投信
 #   5. pcf/collect.py               前 50 大 ETF 的每日申購贖回 + 每日成分 → etf_pcf (見 pcf/store.py)
-#   6. 備份到 Google Drive (CMoney 格式+主檔、投信原始各自 rclone)
+#   6. 備份到 Google Drive (CMoney 格式+主檔、投信原始、申購買回清單各自 rclone)
 # 某步失敗不中斷後續 (例如 MOPS 失敗仍讓爬蟲用既有名單續跑)。
 #
 # 2026-10 起不再跑 etf_crawler.py: CMoney 端點改成要驗證 (回 Auth Failed)，
@@ -64,3 +64,5 @@ fi
     "$PROJECT_DIR/backup_to_gdrive.sh" >> "$CRON_LOG" 2>&1
 "$COMMON/run_with_alert.sh" etf_raw_backup -- \
     "$PROJECT_DIR/raw_holdings/backup_raw_to_gdrive.sh" >> "$CRON_LOG" 2>&1
+"$COMMON/run_with_alert.sh" etf_pcf_backup -- \
+    "$PROJECT_DIR/pcf/backup_pcf_to_gdrive.sh" >> "$CRON_LOG" 2>&1

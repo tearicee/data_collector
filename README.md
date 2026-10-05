@@ -66,6 +66,7 @@ data_collector/
 | `pcf/store.py` | `etf_pcf` 資料集的欄位、讀寫與**日期欄位的意義** (讀資料前先看開頭說明) |
 | `pcf/import_history.py` | 匯入歷史壓縮檔 (2003 年起)；`--check` 比對資料集與壓縮檔 |
 | `pcf/universe.csv` | 追蹤清單 (代號/投信/市場)，要加減檔數改這裡 |
+| `pcf/backup_pcf_to_gdrive.sh` | rclone 將 `/mnt/d/etf_pcf/` 同步到 `gdrive:etf_pcf/` |
 | `backup_to_gdrive.sh` | rclone 將 `/mnt/d/etf_daily_holdings/data/` 同步到 `gdrive:etf_daily_holdings/` |
 | `ETF持股爬蟲.ipynb` | 開發用 notebook (原型參考) |
 | `etf2.zip` | 早期封存 (參考用) |
@@ -73,7 +74,7 @@ data_collector/
 **資料存放**：`D:/etf_daily_holdings/data/`（每支 ETF 每日一檔 `<持股基準日>_<代號>.csv`，欄位 `date, stock_id, weight(%), holdings(張), etf`）→ 同步至 `gdrive:etf_daily_holdings/`。
 20260930 (含) 以前為 CMoney 原檔；之後由投信資料轉出，只含判定得出基準日的 ETF (國內個股不足 8 檔的槓桿/反向/海外/債券型不轉)，且沒有現金列、期貨代號不帶合約月份。
 
-**申購買回清單資料集**：`D:/etf_pcf/creation_redemption.parquet`（每檔每日一列）與 `D:/etf_pcf/constituents/<代號>.parquet`（每檔一張長表），歷史自各檔成立日起（0050 為 2003-06-25），原始壓縮檔在 `D:/etf_pcf/source/`。
+**申購買回清單資料集**：`D:/etf_pcf/creation_redemption.parquet`（每檔每日一列）與 `D:/etf_pcf/constituents/<代號>.parquet`（每檔一張長表），歷史自各檔成立日起（0050 為 2003-06-25），原始壓縮檔在 `D:/etf_pcf/source/`；每晚同步至 `gdrive:etf_pcf/`。
 ⚠️ 「交易日」欄在各投信、兩張表的意義不同（多數是清單公告日，內容是前一交易日的數字）；跨投信比較、對價格、算流量請用「資料基準日」欄。完整說明在 `etf/pcf/store.py` 開頭。
 
 ---
@@ -157,7 +158,7 @@ data_collector/
 | 時間 | 工作 |
 |---|---|
 | 06:00 每天 | `taifex/run_taifex_daily.sh` — 期交所期貨+選擇權下載 + 同步雲端 |
-| 18:55 週一~五 | `etf/run_crawler.sh` — 投信 ETF 持股 + 轉 CMoney 格式 (18:55、20:40 兩輪) + 同步雲端 |
+| 18:55 週一~五 | `etf/run_crawler.sh` — 投信 ETF 持股 + 轉 CMoney 格式 (18:55、20:40 兩輪) → 申購買回清單 (`pcf/collect.py`) → 同步雲端 |
 | 07:00~23:50 每 10 分 / 07:20 每天 | `material_info/run_material_info.sh poll` / `daily` — 重大訊息輪詢 / 回掃對帳 (僅存 D 槽) |
 | 全天每 15 分 | `news/run_news.sh` — 財經新聞輪詢 (僅存 D 槽) |
 | 07:40/13:40/18:40/22:40 | `event_rules/run_pipeline.sh` — 重訊+新聞標籤與新鮮度評分 |
@@ -167,7 +168,7 @@ data_collector/
 
 ## ☁️ Google Drive 同步範圍
 
-會上傳雲端 (透過 rclone `gdrive:` remote)：**期交所 Taifex**、**ETF 持股** (`gdrive:etf_daily_holdings`)、**FinMind 股票 tick** (`gdrive:finmind_data`)。
+會上傳雲端 (透過 rclone `gdrive:` remote)：**期交所 Taifex**、**ETF 持股** (`gdrive:etf_daily_holdings`、`gdrive:etf_daily_holdings_raw`)、**ETF 申購買回清單** (`gdrive:etf_pcf`)、**FinMind 股票 tick** (`gdrive:finmind_data`)。
 NBIM、FinMind 分點/期貨/選擇權逐筆只存本機 D 槽。
 
 ## 🔧 共用環境
