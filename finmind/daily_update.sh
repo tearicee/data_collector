@@ -41,8 +41,11 @@ echo "$(TS) [INFO] token 有效，更新全部資料集，視窗 $START ~ $END" 
 # "$VENV_PY" download_tick.py --dataset TaiwanStockPriceTick \
 #     --start "$START" --end "$END" --reverse >> "$LOG_FILE" 2>&1
 
-# /api/v4/data 期貨 + 選擇權逐筆 (JSON→parquet)
-"$VENV_PY" download_data_tick.py --datasets TaiwanFuturesTick,TaiwanOptionTick \
+# /api/v4/data 期貨 + 選擇權逐筆 (逐商品下載，JSON→parquet)
+# 經 run_with_alert：有任何一天失敗就告警並寫心跳 finmind_futopt_tick
+# (2026-09-19 起 API 改成必須帶 data_id，舊寫法每天失敗卻沒人知道，資料停了半個月)
+/home/tearicee/data_collector/common/run_with_alert.sh finmind_futopt_tick -- \
+    "$VENV_PY" download_data_tick.py --datasets TaiwanFuturesTick,TaiwanOptionTick \
     --start "$START" --end "$END" --reverse >> "$LOG_FILE" 2>&1
 
 # --- 3. 只同步股票 tick 到 Google Drive (期貨/選擇權/分點依設定不上雲) ---

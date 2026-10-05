@@ -11,8 +11,8 @@
 |---|---|---|---|
 | `TaiwanStockPriceTick` | 台股逐筆成交 | `storage_objects` | 一次拿特定日期、所有股票 (parquet) |
 | `TaiwanStockTradingDailyReport` | 台股分點進出 (券商分點買賣超) | `storage_objects` | 一次拿特定日期、所有資料 (parquet) |
-| `TaiwanFuturesTick` | 期貨逐筆成交 | `/api/v4/data` | 一次拿特定日期、所有商品 (JSON→parquet) |
-| `TaiwanOptionTick` | 選擇權逐筆成交 | `/api/v4/data` | 一次拿特定日期、所有商品 (JSON→parquet) |
+| `TaiwanFuturesTick` | 期貨逐筆成交 | `/api/v4/data` | 逐日、逐商品 (`data_id`) 下載後併成一天一檔 (JSON→parquet) |
+| `TaiwanOptionTick` | 選擇權逐筆成交 | `/api/v4/data` | 逐日、逐商品 (`data_id`) 下載後併成一天一檔 (JSON→parquet) |
 
 ### 技術面資料集 (15 項，`download_technical.py` + `download_tick.py`)
 
@@ -36,7 +36,7 @@ FinMind「台股 - 技術面」分類，完整歷史回補。依取得方式分�
 | 腳本 | 用途 |
 |---|---|
 | `download_tick.py` | 下載 `storage_objects` 整日資料（股票 tick / 分K / 分點），`--dataset` 切換；`--blackout` 盤中暫停 |
-| `download_data_tick.py` | 下載 `/api/v4/data` 期貨/選擇權逐筆（整日所有商品，轉 parquet） |
+| `download_data_tick.py` | 下載 `/api/v4/data` 期貨/選擇權逐筆（2026-09-19 起 API 必須帶 `data_id`：商品清單取自日成交資料集，逐商品抓、併成一天一檔；當天的檔是暫定檔 `.partial`，下一個交易日補齊 15:00 後的夜盤才定稿）。測試：`python -m unittest test_download_data_tick` |
 | `download_technical.py` | 下載 `/api/v4/data` 技術面 13 集（快照/逐日/週/月），`REGISTRY` 登錄各集 mode 與最早日；`--blackout` 盤中暫停 |
 | `check_token.py` | 檢查 token 是否仍為有效 SponsorPro（供每日更新判斷是否續抓） |
 | `daily_update.sh` | 每日更新最近 7 天股票 tick / 分點 / 期貨 / 選擇權，並同步股票 tick 至 Google Drive |

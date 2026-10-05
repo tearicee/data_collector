@@ -87,9 +87,9 @@ data_collector/
 | 檔案 | 用途 |
 |---|---|
 | `download_tick.py` | 下載 `storage_objects` 整日資料 (股票 tick / 分點)，`--dataset` 切換 |
-| `download_data_tick.py` | 下載 `/api/v4/data` 期貨/選擇權逐筆 (整日所有商品，JSON→parquet) |
+| `download_data_tick.py` | 下載 `/api/v4/data` 期貨/選擇權逐筆 (逐商品帶 `data_id` 下載、併成一天一檔；當天為暫定檔，下一個交易日補齊夜盤後定稿) |
 | `check_token.py` | 檢查 token 是否仍為有效 SponsorPro (供每日更新判斷) |
-| `daily_update.sh` | **每天 20:00** 更新最近 7 天股票 tick + 同步 Google Drive |
+| `daily_update.sh` | **每天 20:00** 更新最近 7 天期貨/選擇權逐筆 (失敗告警，心跳 `finmind_futopt_tick`) + 同步股票 tick 到 Google Drive |
 | `backup_to_gdrive.sh` | rclone 將股票 tick 同步到 `gdrive:finmind_data/` |
 | `backfill_progress.py` | 查各 FinMind 資料集下載進度 (%、涵蓋日期、大小、執行中程序) |
 | `start_finmind_backfill.sh` / `stop_finmind_backfill.sh` | 大型歷史回溯下載的啟動/停止 (期貨/選擇權/分點並行) |
@@ -102,8 +102,8 @@ data_collector/
 |---|---|---|---|
 | `TaiwanStockPriceTick` | 台股逐筆成交 | ✅ 20:00 | ✅ gdrive |
 | `TaiwanStockTradingDailyReport` | 台股分點進出 | ❌ (歷史一次性) | ❌ |
-| `TaiwanFuturesTick` | 期貨逐筆成交 | ❌ (歷史一次性) | ❌ |
-| `TaiwanOptionTick` | 選擇權逐筆成交 | ❌ (歷史一次性) | ❌ |
+| `TaiwanFuturesTick` | 期貨逐筆成交 | ✅ 20:00 | ❌ |
+| `TaiwanOptionTick` | 選擇權逐筆成交 | ✅ 20:00 | ❌ |
 
 逐筆資料時段：日盤 08:45–13:45、夜盤 15:00–隔日 05:00 (夜盤跨午夜)。
 
