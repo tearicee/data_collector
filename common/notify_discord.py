@@ -29,6 +29,9 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from common import alert_log  # noqa: E402
+
 # BASE_DIR = data_collector 專案根 (common 的上一層)，.env 放在這裡
 BASE_DIR = Path(__file__).resolve().parent.parent
 MAX_LEN = 1900          # 留餘裕給 ``` 框與換行 (上限 2000)
@@ -100,15 +103,17 @@ def alert(job: str, message: str, exit_code: int | None = None,
     if exit_code is not None:
         header += f"  (exit={exit_code})"
     body = message.strip()
-    if log_tail.strip():
-        body += "\n\n--- log 尾段 ---\n" + log_tail.strip()
+    tail = alert_log.compact_tail(log_tail)          # 去掉進度雜訊、只留最後幾行
+    if tail:
+        body += "\n\n--- log 尾段 ---\n" + tail
+    n = 0
     try:
         n = post(header, env_var=env_var, code_block=False)
         n += post(body, env_var=env_var, code_block=True)
-        return n
     except Exception as e:                           # noqa: BLE001
         print(f"[notify_discord][error] 告警送出失敗: {e}", file=sys.stderr)
-        return 0
+    alert_log.record("data_collector", job, message, exit_code, log_tail, sent=n > 0)
+    return n
 
 
 if __name__ == "__main__":

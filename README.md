@@ -153,6 +153,16 @@ data_collector/
 
 ---
 
+## 📁 common/ — 共用工具
+
+| 檔案 | 用途 |
+|---|---|
+| `run_with_alert.sh <job> -- <cmd>` | cron 包裝器：寫心跳 `D:/monitoring/heartbeat/<job>.json`，失敗才發 Discord 告警 |
+| `notify_discord.py` | 送告警頻道；`alert()` 會先把 log 尾段去雜訊、只留最後 12 行／800 字，並寫入告警紀錄 |
+| `alert_log.py` | 告警紀錄 `D:/monitoring/alerts.jsonl`（daily_script 也寫同一份）；`python common/alert_log.py --hours 24 [--tail]` 查最近告警 |
+| `daily_healthcheck.py` | 07:00 健檢：心跳逾期／失敗、資料落地、前 24 小時告警；只在有異常時送 Discord（`--dry` 只印） |
+| `rotate_logs.sh [MB]` | 每月 1 日把超過 5 MB 的排程 log／jsonl 壓縮封存成 `<名>.<YYYYMMDD>.gz` 後清空續寫 |
+
 ## ⏰ 自動排程 (crontab)
 
 | 時間 | 工作 |

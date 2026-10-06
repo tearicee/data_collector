@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import heartbeat, market_closures, notify_discord  # noqa: E402
+from common import alert_log, heartbeat, market_closures, notify_discord  # noqa: E402
 
 if sys.platform == "win32":
     D = Path(r"D:\\")
@@ -186,6 +186,12 @@ def build_report() -> tuple[str, bool, str]:
     # 註: 未實作 adapter 的投信 (pending_adapters.json) 為刻意凍結的名單，
     # 不再視為待補事項，故健檢不列出、不告警 (見 run_raw 仍會寫檔供人工查閱)。
 
+    # ---- C. 前 24 小時送出的告警 (alerts.jsonl；心跳會被下一輪成功覆蓋，這裡才看得到) ----
+    alerts = alert_log.read(now - timedelta(hours=24))
+    alert_lines = alert_log.summary_lines(alerts)
+    lines.append(f"\n[前 24 小時告警 {len(alerts)} 筆]")
+    lines.extend(alert_lines or ["  (無)"])
+
     # ---- 結論 ----
     lines.append("\n" + "=" * 46)
     has_problem = bool(problems)
@@ -201,6 +207,8 @@ def build_report() -> tuple[str, bool, str]:
     if issue_lines:
         brief += ["[任務心跳：異常]", *issue_lines]
     brief += ["", "異常項目:", *(f"  - {item}" for item in problems)] if problems else []
+    if alert_lines:
+        brief += ["", f"[前 24 小時告警 {len(alerts)} 筆]", *alert_lines]
     brief.append(f"（其餘 {ok_count} 個任務正常，未列出）")
     return ("\n".join(lines), has_problem, "\n".join(brief))
 
