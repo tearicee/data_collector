@@ -10,7 +10,8 @@
   - SemiAnalysis、Stratechery、TrendForce 集邦 (英文新聞)、Fabricated Knowledge、The Information、
     Mark Gurman (彭博作者 RSS，只有標題)、MacRumors (只留提到名單分析師的文章)
   - 媒體轉述：陸行之、楊應超、蒲得宇、Ross Young、Counterpoint、IDC、Omdia 等沒有公開 RSS
-    (Facebook/券商報告/付費牆)，改從新聞庫找提到他們的報導 (MENTIONS)
+    (Facebook/券商報告/付費牆)，改從新聞庫找提到他們的報導 (MENTIONS)；
+    陸行之、楊應超、蒲得宇、Ross Young 另用 Google 新聞搜尋補新聞庫沒收的媒體 (gnews)
 分析師本人的新發文 (Medium/X) 會推到 Discord，一律經 push_discord.guarded_send 防呆
 (只送 6 小時內、未推過、分數達門檻者，且有單次與每小時上限)；媒體轉述不在此推送。
 另輸出關鍵字清單供人工整理：/mnt/d/mops/news/mapping/分析師關鍵字_<作者>.csv
@@ -38,6 +39,8 @@ MAP_DIR = Path("/mnt/d/mops/news/mapping")
 STOCK_INFO = "/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet"
 FIELDS = ["發布時間", "作者", "平台", "語言", "標題", "內文", "連結", "互動數", "抓取時間"]
 NS = {"content": "http://purl.org/rss/1.0/modules/content/"}
+ATOM = "{http://www.w3.org/2005/Atom}"
+GNEWS = "https://news.google.com/rss/search?q={q}+when:{days}d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
 SOURCES = [
     {"作者": "郭明錤", "平台": "Medium", "type": "rss", "url": "https://medium.com/feed/@mingchikuo", "push": True},
     {"作者": "郭明錤", "平台": "X", "type": "x", "handle": "mingchikuo", "push": True},
@@ -51,6 +54,11 @@ SOURCES = [
     # MacRumors 只留提到下列分析師的文章 (作者欄記為被引用的人)
     {"作者": "MacRumors", "平台": "媒體轉述", "type": "rss", "url": "https://feeds.macrumors.com/MacRumors-All",
      "push": False, "mention_only": True},
+    # 沒有自己發文管道的分析師：Google 新聞搜尋補新聞庫沒收的媒體 (標題需點名本人才收)
+    {"作者": "陸行之", "平台": "媒體轉述", "type": "gnews", "query": "陸行之", "push": False},
+    {"作者": "楊應超", "平台": "媒體轉述", "type": "gnews", "query": "楊應超", "push": False},
+    {"作者": "蒲得宇", "平台": "媒體轉述", "type": "gnews", "query": "蒲得宇", "push": False},
+    {"作者": "Ross Young", "平台": "媒體轉述", "type": "gnews", "query": '"Ross Young"', "push": False},
 ]
 # 沒有自己的公開發文管道 (Facebook、券商報告、付費牆) 者：從新聞庫找提到他們的報導，記為「媒體轉述」
 MENTIONS = {
@@ -70,8 +78,54 @@ def lang_of(text: str) -> str:
     return "中文" if zh >= 40 else "英文"
 
 
+def atom(root, src: dict) -> list:
+    """Atom 格式 (<entry>/<published>/<link href>)，The Information 用這種。"""
+    rows = []
+    for it in root.iter(ATOM + "entry"):
+        link = next((l.get("href") for l in it.findall(ATOM + "link") if l.get("rel") in (None, "alternate")), "")
+        title = dn.clean_html(it.findtext(ATOM + "title") or "")
+        body = dn.clean_html(it.findtext(ATOM + "content") or it.findtext(ATOM + "summary") or "")
+        t = pd.to_datetime(it.findtext(ATOM + "published") or it.findtext(ATOM + "updated"), errors="coerce", utc=True)
+        if not link or not title or pd.isna(t):
+            continue
+        rows.append({"發布時間": t.tz_convert("Asia/Taipei").strftime("%Y-%m-%d %H:%M:%S"), "作者": src["作者"],
+                     "平台": src["平台"], "語言": src.get("lang") or lang_of(title + body), "標題": title,
+                     "內文": body, "連結": dn.clean_link(link), "互動數": None, "抓取時間": now()})
+    return rows
+
+
+def gnews(src: dict) -> list:
+    """Google 新聞搜尋 RSS：只收標題點名本人、且新聞庫的媒體轉述還沒有的報導。內文只有標題 (連結是轉址)。"""
+    from urllib.parse import quote
+    root = ET.fromstring(dn.get(GNEWS.format(q=quote(src["query"]), days=MENTION_DAYS)).content)
+    pat = MENTIONS[src["作者"]]
+    have = set()
+    for path in sorted(OUT_DIR.glob("分析師發文_*.parquet"))[-2:]:
+        old = pd.read_parquet(path, columns=["作者", "標題"])
+        have |= {_norm(t) for t in old.loc[old["作者"] == src["作者"], "標題"]}
+    rows = []
+    for it in root.iter("item"):
+        media = (it.findtext("source") or "").strip()
+        title = dn.clean_html(it.findtext("title") or "")
+        title = title[: -len(media) - 3] if media and title.endswith(f" - {media}") else title
+        if not re.search(pat, title) or _norm(title) in have:
+            continue
+        have.add(_norm(title))
+        rows.append({"發布時間": dn.parse_pubdate(it.findtext("pubDate")).strftime("%Y-%m-%d %H:%M:%S"),
+                     "作者": src["作者"], "平台": f"媒體轉述({media or 'Google新聞'})", "語言": lang_of(title * 4),
+                     "標題": title, "內文": title, "連結": it.findtext("link"), "互動數": None, "抓取時間": now()})
+    return rows
+
+
+def _norm(title: str) -> str:
+    title = re.sub(r"\s*[-|｜]\s*[^-|｜]{1,8}$", "", title or "")     # 去掉「- 財經」「| 財經焦點」這類頻道尾巴
+    return re.sub(r"[\W_]+", "", title)[:20]
+
+
 def rss(src: dict) -> list:
     root = ET.fromstring(dn.get(src["url"]).content)
+    if root.tag == ATOM + "feed":
+        return atom(root, src)
     rows = []
     for it in root.iter("item"):
         body = dn.clean_html(it.findtext("content:encoded", namespaces=NS) or it.findtext("description") or "")
@@ -269,7 +323,7 @@ def main() -> int:
     first_run = not any(OUT_DIR.glob("分析師發文_*.parquet"))
     for src in SOURCES:
         try:
-            rows = rss(src) if src["type"] == "rss" else x_timeline(src)
+            rows = {"rss": rss, "gnews": gnews, "x": x_timeline}[src["type"]](src)
             new = upsert(rows)
             total += len(new)
             print(f"{now()} {src['作者']}/{src['平台']}: 取得 {len(rows)}，新增 {len(new)}", flush=True)

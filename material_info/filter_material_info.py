@@ -18,7 +18,8 @@
 
 輸出：/mnt/d/mops/material_info/derived/重訊篩選_YYYY-MM.parquet
 用法：
-  python filter_material_info.py                 # 重算全部月份
+  python filter_material_info.py                 # 重算全部月份 (主庫自 2006 起約 126 萬筆，需數分鐘)
+  python filter_material_info.py --recent 2      # 只重算最近 2 個月 (每日流程用；判重往回多讀 4 個月)
   python filter_material_info.py --summary       # 只印統計不寫檔
 """
 
@@ -114,8 +115,19 @@ def classify(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def run(write: bool = True) -> pd.DataFrame:
-    df = classify(store.read_range())
+def recent_window(recent: int) -> tuple:
+    """最近 N 個月 → (要寫出的月份清單, 判重需要讀取的起始日)。"""
+    now = pd.Timestamp.now()
+    months = [(now - pd.DateOffset(months=i)).strftime("%Y-%m") for i in range(recent)]
+    start = (pd.Period(min(months), "M") - LOOKBACK_MONTHS).strftime("%Y-%m-01")
+    return months, start
+
+
+def run(write: bool = True, recent: int = 0) -> pd.DataFrame:
+    months, start = recent_window(recent) if recent else (None, None)
+    df = classify(store.read_range(start))
+    if months:
+        df = df[df["發言日期"].str[:7].isin(months)]
     if write:
         DERIVED_DIR.mkdir(parents=True, exist_ok=True)
         for ym, g in df.groupby(df["發言日期"].str[:7]):
@@ -130,8 +142,9 @@ def run(write: bool = True) -> pd.DataFrame:
 def main() -> int:
     ap = argparse.ArgumentParser(description="重大訊息規則過濾")
     ap.add_argument("--summary", action="store_true", help="只印統計不寫檔")
+    ap.add_argument("--recent", type=int, default=0, help="只重算最近 N 個月 (每日流程用)；0 = 全部")
     args = ap.parse_args()
-    df = run(write=not args.summary)
+    df = run(write=not args.summary, recent=args.recent)
     print(f"總筆數 {len(df):,}")
     print(df["filter_label"].value_counts().to_string())
     print("\nroutine 原因：")

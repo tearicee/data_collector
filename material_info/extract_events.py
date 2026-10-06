@@ -16,6 +16,7 @@
 import argparse
 import json
 import re
+import unicodedata
 import sys
 from pathlib import Path
 
@@ -94,7 +95,7 @@ def x_private(f: dict, body: str) -> dict:
     _set(d, "董事會決議日", N.first_date(pick(f, "董事會決議日期")))
     _set(d, "證券種類", pick(f, "私募有價證券種類")[:30])
     who = pick(f, "私募對象及其與公司間關係")
-    _set(d, "應募人摘要", re.sub(r"\s+", " ", who)[:200])
+    _set(d, "應募人摘要", re.sub(r"[-=]{3,}", " ", re.sub(r"\s+", " ", who))[:500])
     _set(d, "私募股數", _shares(pick(f, "私募股數或張數")) or N.first_number(pick(f, "私募股數或張數")))
     _money(d, "參考價格", pick(f, "參考價格"))
     _money(d, "私募價格", pick(f, "實際私募價格"))
@@ -150,48 +151,159 @@ def x_reduction(f: dict, body: str) -> dict:
     return d
 
 
-_ROW = {"營業收入": "營收", "稅前淨利": "稅前淨利", "稅前損益": "稅前淨利", "司業主淨利": "母公司淨利",
-        "業主淨利": "母公司淨利", "本期淨利": "母公司淨利", "每股盈餘": "EPS", "每股虧損": "EPS"}
+_ROW = {"營業收入": "營收", "稅前淨利": "稅前淨利", "稅前純益": "稅前淨利", "稅前損益": "稅前淨利", "司業主淨利": "母公司淨利",
+        "業主淨利": "母公司淨利", "歸屬母公司": "母公司淨利", "歸屬於母公司": "母公司淨利", "本期淨利": "母公司淨利", "稅後淨利": "母公司淨利", "稅後純益": "母公司淨利", "每股盈餘": "EPS", "每股虧損": "EPS"}
+
+
+_NUM = re.compile(r"[-+]?[(（]?-?\d[\d,]*(?:\.\d+)?%?[)）]?%?")
+_PAREN = re.compile(r"[(（]([^()（）]*)[)）]")
+_TO_MILLION = {"仟元": 1e-3, "千元": 1e-3, "百萬元": 1.0, "億元": 100.0, "億": 100.0, "元": 1e-6}
+
+
+def _num(tok: str):
+    neg = tok.lstrip("+").startswith(("(", "（", "-"))
+    v = re.sub(r"[^\d.]", "", tok)
+    if not v:
+        return None
+    return -float(v) if neg else float(v)
+
+
+def _row_numbers(line: str, dash_minus: bool = False) -> list:
+    """取出一列的數值 (依欄位順序；「-」代表該欄沒有數字，回 None 佔位)。
+       dash_minus=True 時把「- 12.30%」這種負號與數字分開的寫法併成負數。
+       括號裡是文字的 (百萬元)(元)(註1)(由虧轉盈) 先去掉；純數字的括號 (0.07) 是負數要留。"""
+    body = _PAREN.sub(lambda m: m[0].replace(" ", "") if re.fullmatch(r"[\d.,\s%-]+", m[1]) else " ", line)
+    body = re.sub(r"^[^\d\-+(]*", "", body)
+    if dash_minus:
+        body = re.sub(r"(?<!\S)-\s+(?=\d)", "-", body)
+    out = []
+    for tok in body.split():
+        tok = tok.lstrip(",")                      # 千分位打錯：「,3.54」
+        if tok in ("-", "--", "N/A", "NA"):
+            out.append(None)
+            continue
+        m = _NUM.match(tok)
+        if m and _num(m[0]) is not None:
+            out.append(_num(m[0]))
+    return out
+
+
+def _row_key(line: str):
+    return next((v for k, v in _ROW.items() if k in line), None)
+
+
+def _section(line: str):
+    """表頭列屬於哪一段：最近一月 / 最近一季 / 近四季累計；同一列同時有月與季 → 橫式。"""
+    head = re.sub(r"\s+", " ", line.strip())
+    if _row_key(head) or len(head) > 90 or re.match(r"[(*]?註", head):
+        return None
+    mon, qtr = re.search(r"單月|最近一個?月|[( ]月[) ]", head), re.search(r"單季|最近一季|[( ]季[) ]", head)
+    if mon and qtr:
+        return "橫式"
+    return "最近一月" if mon else "最近一季" if qtr else "近四季累計" if "四季累計" in head else None
+
+
+def _table_rows(lines: list) -> list:
+    """[(段落或 None, 科目或 None, (數值, 數值〔負號分開寫的併成負數〕))]；科目名稱折行 (數字在下一行) 時往下一行取。"""
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        sec, key = _section(line), _row_key(line)
+        src = line
+        if key and not _row_numbers(line) and i + 1 < len(lines) and not _row_key(lines[i + 1]) \
+                and not _section(lines[i + 1]):
+            src = lines[i + 1]
+            i += 1
+        out.append((sec, key, (_row_numbers(src), _row_numbers(src, True)) if key else ([], [])))
+        i += 1
+    return out
+
+
+def _self_report_text(body: str) -> dict:
+    """沒有表格的自結公告：「115年8月份自結合併營業收入為新台幣410,577仟元，較去年同期減少4%」。金額一律換成百萬。"""
+    t = re.sub(r"\s+", "", body)
+    m = re.search(r"(\d{2,3})年(\d{1,2})月份?[^。；;]{0,30}?營業收入[^\d。；;]{0,25}?([\d,]+(?:\.\d+)?)(仟元|千元|百萬元|億元|億|元)", t)
+    if not m or int(m[1]) > 200:
+        return {}
+    d = {"營收_最近一月": round(float(m[3].replace(",", "")) * _TO_MILLION[m[4]], 2),
+         "金額單位": "百萬", "資料月份": f"{int(m[1]) + 1911}-{int(m[2]):02d}", "版式": "文字"}
+    cur = re.search(r"(美元|美金|人民幣|日圓|歐元)[^。；;]{0,3}$", t[max(m.start(3) - 12, 0):m.start(3)])
+    _set(d, "幣別", cur[1].replace("美金", "美元") if cur else "")
+    rest = t[m.end():]
+    y = re.match(r"[^。；;]{0,30}?較去年同期[^\d。；;]{0,12}?(增加|成長|減少|衰退|下滑)約?([\d.]+)%", rest)
+    if y:
+        d["營收_月年增_pct"] = float(y[2]) * (1 if y[1] in ("增加", "成長") else -1)
+    stop = re.search(r"累計", rest)                       # 只取單月那一句，累計數不取
+    month_part = rest[:stop.start()] if stop else rest[:200]
+    p = re.search(r"稅前(?:淨利|純益|損益)[^\d。；;\-]{0,10}?(-?[\d,]+(?:\.\d+)?)(仟元|千元|百萬元|億元|億)", month_part)
+    if p:
+        d["稅前淨利_最近一月"] = round(float(p[1].replace(",", "")) * _TO_MILLION[p[2]], 2)
+    e = re.search(r"每股(盈餘|純益|虧損)[^\d。；;\-]{0,10}?(-?\d+(?:\.\d+)?)元", month_part)
+    if e:
+        d["EPS_最近一月"] = float(e[2]) * (-1 if e[1] == "虧損" and float(e[2]) > 0 else 1)
+    return d
 
 
 def x_self_report(f: dict, body: str) -> dict:
-    """注意交易資訊的財務業務資訊表：每列 5 個數 = 最近一月、年增%、最近一季、年增%、近四季累計。"""
+    """自結數字。注意交易資訊的「財務業務資訊」表有兩種版式：
+       直式：分「單月 / 單季 / 最近四季累計」三段，每列 = 本期、去年同期、年增%
+       橫式：每列 5 個數 = 最近一月、年增%、最近一季、年增%、近四季累計
+       沒有表格的 (每月自結營收公告) 從句子抽單月營收與年增率。"""
     d = {}
-    seg = body[body.find("財務業務資訊"):] if "財務業務資訊" in body else body
-    unit = "仟元" if re.search(r"仟元|千元", seg[:900]) else ("百萬" if "百萬" in seg[:900] else "")
-    if re.search(r"[(（]一[)）]\s*單月", seg):  # 櫃買版式：單月/單季/四季累計三段，每列 = 本期、去年同期、增減%
-        block = ""
-        for line in seg.split("\n"):
-            m = re.search(r"[(（][一二三][)）]\s*(單月|單季|最近四季累計)", line)
-            if m:
-                block = {"單月": "最近一月", "單季": "最近一季", "最近四季累計": "近四季累計"}[m[1]]
-                continue
-            key = next((v for k, v in _ROW.items() if k in line), None)
-            nums = [float(n.replace(",", "")) for n in re.findall(r"-?[\d,]+\.?\d*", re.sub(r"^[^\d\-]*?[)）]", "", line, 1))]
-            if not (block and key and nums) or f"{key}_{block}" in d:
-                continue
-            d[f"{key}_{block}"] = nums[0]
-            if len(nums) >= 3 and block != "近四季累計":
-                d[f"{key}_{block}_去年同期"] = nums[1]
-                d[f"{key}_{'月' if block == '最近一月' else '季'}年增_pct"] = nums[2]
-        m = re.search(r"單月\s*(\d{2,3})年\s*(\d{1,2})月", seg)
+    if "財務業務資訊" in body:
+        seg = unicodedata.normalize("NFKC", body[body.find("財務業務資訊"):])
+        seg = re.split(r"\n\s*\d{1,2}[\.、]\s*有無", seg)[0]          # 只留財務表格那一段
+        rows = _table_rows(seg.split("\n"))
+        secs = {sec for sec, _, _ in rows if sec}
+
+        def fit(pair, sizes):      # 兩種讀法取欄數對得上的那一種
+            a, b = pair
+            return b if len(b) in sizes and len(a) not in sizes else a
+
+        if "橫式" not in secs and "最近一月" in secs:
+            block = ""
+            for sec, key, pair in rows:
+                if sec:
+                    block = sec
+                nums = fit(pair, (1, 3))
+                if not (block and key and nums) or nums[0] is None or f"{key}_{block}" in d:
+                    continue
+                d[f"{key}_{block}"] = nums[0]
+                if block != "近四季累計":
+                    unit = "月" if block == "最近一月" else "季"
+                    _set(d, f"{key}_{block}_去年同期", nums[1] if len(nums) >= 2 else None)
+                    _set(d, f"{key}_{unit}年增_pct", nums[2] if len(nums) >= 3 else None)
+            _set(d, "版式", "直式" if d else "")
+        elif "橫式" in secs or not secs:     # 只有「累計/單季」而沒有單月的表不解析
+            wide = ["最近一月", "最近一月_去年同期", "月年增_pct", "最近一季", "最近一季_去年同期", "季年增_pct", "近四季累計"]
+            narrow = ["最近一月", "月年增_pct", "最近一季", "季年增_pct", "近四季累計"]
+            first = next((fit(pair, (5, 7)) for _, key, pair in rows if key and len(pair[0]) >= 3), [])
+            cols = wide if len(first) >= 6 else narrow      # 欄數以第一個科目列為準，整張表一致
+            for _, key, pair in rows:
+                nums = fit(pair, (len(cols),))
+                if not key or len(nums) < 3 or nums[0] is None or f"{key}_最近一月" in d:
+                    continue
+                for name, v in zip(cols, nums):
+                    _set(d, f"{key}_{name}", v)
+            _set(d, "版式", "橫式" if d else "")
+        if len({k.split("_")[0] for k in d if k.endswith("_最近一月")}) < 2:
+            d = {}                                           # 少於兩個科目 → 不是財務表 (如更正公告)
         if d:
-            _set(d, "金額單位", unit)
-            _set(d, "資料月份", f"{int(m[1]) + 1911}-{int(m[2]):02d}" if m else "")
-        return d
-    for line in seg.split("\n"):
-        key = next((v for k, v in _ROW.items() if k in line), None)
-        nums = re.findall(r"-?\(?[\d,]+(?:\.\d+)?\)?", re.sub(r"^[^\d\-(]*", "", line))
-        if not key or len(nums) < 3 or f"{key}_最近一月" in d:
-            continue
-        vals = [(-1 if n.startswith("(") or n.startswith("-(") else 1) * float(n.strip("()-").replace(",", "") or 0)
-                * (-1 if n.startswith("-") and not n.startswith("-(") else 1) for n in nums[:5]]
-        for name, v in zip(["最近一月", "月年增_pct", "最近一季", "季年增_pct", "近四季累計"], vals):
-            d[f"{key}_{name}"] = v
-    m = re.search(r"(\d{2,3})年\s*(\d{1,2})月", seg)
-    if d:
-        _set(d, "金額單位", unit)
-        _set(d, "資料月份", f"{int(m[1]) + 1911}-{int(m[2]):02d}" if m else "")
+            m = (re.search(r"(?<![\d/])(\d{2,4})[ \t]*[年/]{1,2}[ \t]*(\d{1,2})(?![\d/])(?!\s*季)", seg)
+                 or re.search(r"(\d{2,4})年\s*(\d{1,2})月", seg))
+            year = int(m[1]) + (1911 if int(m[1]) < 200 else 0) if m else 0
+            _set(d, "金額單位", "仟元" if re.search(r"仟元|千元", seg[:900]) else ("百萬" if "百萬" in seg[:900] else ""))
+            _set(d, "資料月份", f"{year}-{int(m[2]):02d}" if 2000 <= year <= 2100 and 1 <= int(m[2]) <= 12 else "")
+            mo, last, yoy, q = (d.get("營收_" + k) for k in ("最近一月", "最近一月_去年同期", "月年增_pct", "最近一季"))
+            if mo is not None and last and last > 0 and yoy is not None:   # 本期/去年同期 與表列年增率互相印證
+                calc = (mo / last - 1) * 100
+                if abs(abs(calc) - abs(yoy)) <= max(5, abs(calc) * 0.15):
+                    d["已驗證"] = True
+            # 合理性：單月營收應落在季營收的 5%~150%；已由年增率印證的 (真的暴增/暴減) 不算存疑
+            if not d.get("已驗證") and mo and mo > 0 and q and q > 0 and not (0.05 <= mo / q <= 1.5):
+                d["解析存疑"] = True
+    else:
+        d = _self_report_text(body)
     for k in ("自結負債比率", "自結流動比率", "自結速動比率"):
         _set(d, k.replace("自結", "") + "_pct", N.first_pct(pick(f, k)) or N.first_number(pick(f, k)))
     return d
@@ -218,8 +330,9 @@ EXTRACTORS = [  # (標籤, 抽取函式, 主要金額欄)
 
 
 def build(months=None) -> pd.DataFrame:
-    """months：只重算這些月份 (YYYY-MM)；None = 全部。判重仍用全部資料 (連續公告要往回看)。"""
-    df = fmi.classify(store.read_range())
+    """months：只重算這些月份 (YYYY-MM)；None = 全部。判重往回多讀 LOOKBACK_MONTHS 個月 (連續公告要往回看)。"""
+    start = (pd.Period(min(months), "M") - fmi.LOOKBACK_MONTHS).strftime("%Y-%m-01") if months else None
+    df = fmi.classify(store.read_range(start))
     if months:
         df = df[df["發言日期"].str[:7].isin(months)]
     rows = []
@@ -230,7 +343,15 @@ def build(months=None) -> pd.DataFrame:
         data, amount, cur = {}, None, ""
         for tag, fn, main in EXTRACTORS:
             if tag in t["tags"]:
-                got = fn(fields, body)
+                try:
+                    got = fn(fields, body)
+                except Exception:  # noqa: BLE001  歷史公告格式千奇百怪，單筆抽取失敗不影響整批 (標籤照留)
+                    got = {}
+                if tag == "自結" and got.get("資料月份"):   # 自結公告的是發言日前 1~3 個月的數字；對不上代表表頭抓錯
+                    gap = pd.Period(r.發言日期[:7], "M") - pd.Period(got["資料月份"], "M")
+                    if not 0 <= gap.n <= 3:
+                        got["資料月份"] = str(pd.Period(r.發言日期[:7], "M") - (2 if int(r.發言日期[8:10]) < 10 else 1))
+                        got["月份推定"] = True
                 if got:
                     data[tag] = got
                     if main and amount is None and got.get(main):
@@ -244,7 +365,8 @@ def build(months=None) -> pd.DataFrame:
         th = themes_of(r.主旨 or "", body)
         rows.append({
             "themes": "|".join(th["title"]), "title_themes": "|".join(th["title"]), "澄清立場": stance,
-            "MOPS鍵": r.MOPS鍵, "公司代號": r.公司代號, "公司簡稱": r.公司簡稱, "市場別": r.市場別,
+            "MOPS鍵": r.MOPS鍵 or f"{r.公司代號}|{r.發布時間:%Y-%m-%d %H:%M:%S}",   # 匯入列 (ES/FinLab) 沒有 MOPS鍵
+            "公司代號": r.公司代號, "公司簡稱": r.公司簡稱, "市場別": r.市場別,
             "發布時間": r.發布時間, "發言日期": r.發言日期, "主旨": r.主旨,
             "filter_label": r.filter_label, "action_stage": r.action_stage,
             "tags": "|".join(t["tags"]), "modifiers": "|".join(t["modifiers"]),
@@ -259,9 +381,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--show", help="列出某標籤的抽取結果")
     ap.add_argument("--recent", type=int, default=0, help="只重算最近 N 個月 (每日流程用)；0 = 全部")
+    ap.add_argument("--from", dest="start", help="只重算 YYYY-MM 起 (搭配 --to；全史重算時分段平行跑)")
+    ap.add_argument("--to", dest="end", help="只重算到 YYYY-MM 止")
     a = ap.parse_args()
     months = None
-    if a.recent:
+    if a.start and a.end:
+        months = [str(p) for p in pd.period_range(a.start, a.end, freq="M")]
+    elif a.recent:
         now = pd.Timestamp.now()
         months = [(now - pd.DateOffset(months=i)).strftime("%Y-%m") for i in range(a.recent)]
     out = build(months)

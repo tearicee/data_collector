@@ -40,16 +40,18 @@ EXCLUDE_THEME = {"金融", "證券", "資產", "營建", "資安硬體", "軟體
 
 def load_prices() -> pd.DataFrame:
     files = sorted(glob.glob(PRICE))[-PRICE_DAYS:]
-    px = pd.concat(pd.read_parquet(f, columns=["date", "stock_id", "close", "Trading_Volume"]) for f in files)
+    px = pd.concat(pd.read_parquet(f, columns=["date", "stock_id", "close", "spread", "Trading_Volume"]) for f in files)
     px["date"] = pd.to_datetime(px["date"])
+    ref = px["close"] - px["spread"]                       # 參考價 (除權息/減資日已調整)
+    px["ret"] = (px["spread"] / ref.where(ref > 0)).fillna(0)
     return px.sort_values(["stock_id", "date"])
 
 
 def momentum(px: pd.DataFrame) -> pd.DataFrame:
     g = px.groupby("stock_id")
     out = px.copy()
-    out["ret1"] = g["close"].pct_change() * 100
-    out["ret5"] = g["close"].pct_change(5) * 100
+    out["ret1"] = out["ret"] * 100
+    out["ret5"] = (g["ret"].transform(lambda s: (1 + s).rolling(5).apply(lambda x: x.prod(), raw=True)) - 1) * 100
     out["ret1_prev"] = out.groupby("stock_id")["ret1"].shift(1)
     out["vol20"] = g["Trading_Volume"].transform(lambda s: s.rolling(20, min_periods=10).mean().shift(1))
     out["vol_ratio"] = out["Trading_Volume"] / out["vol20"]

@@ -7,3 +7,4 @@ pyarrow>=14.0         # parquet 讀寫 (FinMind 下載)
 openpyxl>=3.1         # 讀取 nbim/stock_info.xlsx
 python-dotenv>=1.0    # 讀取 .env 內的 API token
 lxml>=5.0             # ETF / 網頁表格解析
+finlab==1.5.7        # FinLab 重大訊息歷史 (material_info/import_finlab.py)；1.5.7 可用 token 登入

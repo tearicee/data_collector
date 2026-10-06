@@ -3,7 +3,7 @@
 """
 開盤跳空檢討 (永豐 Shioaji 快照)
 ================================================================
-09:05 抓全市場快照 → 算每檔開盤跳空 (開盤價 / 昨收 − 1) → 扣掉大盤與類股後找異常 → 對照前一日
+09:05 抓全市場快照 → 算每檔開盤跳空 (開盤價 / 參考價 − 1；參考價 = 現價 − 漲跌，非昨日收盤價) → 扣掉大盤與類股後找異常 → 對照前一日
 13:30 起到今早的新聞/重訊評分，分三類：
   命中          有新聞且系統事件分 ≥ 7
   有新聞系統低分 有新聞但事件分 < 7      ← 規則要檢討
@@ -65,23 +65,18 @@ def take_snapshot(day: str) -> pd.DataFrame:
         for i in range(0, len(uni), 500):
             for s in api.snapshots(uni[i:i + 500]):
                 d = dict(s.__dict__)
-                d["ts"] = pd.Timestamp(d["ts"], unit="ns").tz_localize("UTC").tz_convert("Asia/Taipei").tz_localize(None)
+                d["ts"] = pd.Timestamp(d["ts"], unit="ns")   # Shioaji 的 ts 已是台灣時間
                 for k in ("exchange", "tick_type", "change_type"):   # enum → 字串
                     d[k] = str(d[k]).split(".")[-1]
                 for k, v in list(d.items()):
                     if not isinstance(v, (int, float, str, pd.Timestamp)) and v is not None:
                         d[k] = str(v)
                 rows.append(d)
-        ref = {}
-        for c in uni:  # 昨收 (contracts.info 的 reference)
-            try:
-                ref[c.code] = float(api.contracts.info(c).reference)
-            except Exception:  # noqa: BLE001
-                pass
     finally:
         api.logout()
     df = pd.DataFrame(rows)
-    df["reference"] = df["code"].map(ref)
+    # 參考價 = 現價 − 漲跌 (交易所口徑；除權息、減資、面額變更當天已是調整後的參考價，不是昨日收盤價)
+    df["reference"] = (df["close"] - df["change_price"]).round(2)
     df["snapshot_day"] = day
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
     df.to_parquet(SNAP_DIR / f"開盤快照_{day}.parquet", compression="zstd", index=False)
@@ -90,6 +85,7 @@ def take_snapshot(day: str) -> pd.DataFrame:
 
 def analyze(df: pd.DataFrame, day: str) -> tuple:
     df = df[(df["open"] > 0) & (df["reference"] > 0)].copy()
+    df = df[df["ts"].astype(str).str[:10] == day]      # 今天還沒成交的個股 (停牌、尚未開出) 快照是舊的，不算
     df["跳空%"] = ((df["open"] / df["reference"] - 1) * 100).round(2)
     f = sorted(glob.glob(INDUSTRY))
     ind = pd.read_parquet(f[-1]) if f else pd.DataFrame(columns=["stock_id", "category"])
@@ -116,7 +112,7 @@ def analyze(df: pd.DataFrame, day: str) -> tuple:
         ev = win[win["stocks"].astype(str).str.contains(rf"(?:^|,){r['code']}(?:,|$)")]
         base = {"日期": day, "代號": r["code"], "名稱": r["名稱"], "產業": r["產業"], "跳空%": r["跳空%"],
                 "類股跳空%": r["類股跳空%"], "相對跳空%": r["相對跳空%"], "類股標準差": r["類股標準差"],
-                "大盤跳空%": round(market_gap, 2), "開盤價": r["open"], "昨收": r["reference"], "量比": r["volume_ratio"]}
+                "大盤跳空%": round(market_gap, 2), "開盤價": r["open"], "參考價": r["reference"], "量比": r["volume_ratio"]}
         if ev.empty:
             nonews.append(base)
             continue
@@ -152,7 +148,7 @@ def main() -> int:
     day = datetime.now().strftime("%Y-%m-%d")
     path = SNAP_DIR / f"開盤快照_{day}.parquet"
     df = pd.read_parquet(path) if path.exists() and "--reuse" in sys.argv else take_snapshot(day)
-    if str(df["ts"].max())[:10] != day or (df["total_volume"] > 0).sum() < 100:
+    if (df["ts"].astype(str).str[:10] == day).sum() < 100:
         print(f"{day} 快照不是今天的 (最新 {df['ts'].max()})：非交易日或尚未開盤，略過")
         return 0
     rev, nonews, mkt = analyze(df, day)

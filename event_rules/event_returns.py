@@ -38,10 +38,14 @@ def main() -> int:
     sc = pd.concat(pd.read_parquet(f) for f in files)
     sc = sc[sc["stocks"].astype(str).str.match(r"^\d{4}")].copy()
     sc["stock"] = sc["stocks"].astype(str).str.split(",").str[0]
-    px = pd.concat(pd.read_parquet(f, columns=["date", "stock_id", "close"]) for f in sorted(glob.glob(PRICE))[-120:])
+    px = pd.concat(pd.read_parquet(f, columns=["date", "stock_id", "close", "spread"]) for f in sorted(glob.glob(PRICE))[-120:])
     px["date"] = pd.to_datetime(px["date"])
-    closes = px.pivot(index="date", columns="stock_id", values="close").sort_index()
-    mkt = closes.pct_change().median(axis=1)             # 全市場中位數日報酬 (超額報酬基準)
+    ref = px["close"] - px["spread"]                      # 參考價；日報酬一律對參考價算，除權息/減資日不失真
+    px["ret"] = (px["spread"] / ref.where(ref > 0)).fillna(0)
+    rets = px.pivot(index="date", columns="stock_id", values="ret").sort_index()
+    closes = (1 + rets.fillna(0)).cumprod()               # 還原後的累積淨值，之後的 a/b-1 都是調整後報酬
+    closes = closes.where(rets.notna())
+    mkt = rets.median(axis=1)                             # 全市場中位數日報酬 (超額報酬基準)
     days = list(closes.index)
     ind = pd.read_parquet(sorted(glob.glob(INDUSTRY))[-1])
     industry = dict(zip(ind["stock_id"].astype(str), ind["category"]))

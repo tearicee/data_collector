@@ -58,9 +58,16 @@ def webhook() -> str:
 
 def _state() -> dict:
     if not STATE.exists():
-        return {"pushed": [], "sent_times": []}
+        return {"pushed": [], "sent_times": [], "suppressed": []}
     d = json.loads(STATE.read_text())
-    return {"pushed": d, "sent_times": []} if isinstance(d, list) else d   # 舊格式是純清單
+    d = {"pushed": d, "sent_times": []} if isinstance(d, list) else d   # 舊格式是純清單
+    d.setdefault("suppressed", [])
+    return d
+
+
+def _seen(it: dict, pushed: set) -> bool:
+    """推過了嗎：事件編號推過，或事件裡任何一則報導/公告 (members) 已經跟著別的事件推過。"""
+    return it["key"] in pushed or bool(set(it.get("members", ())) & pushed)
 
 
 def guarded_send(items: list, test: bool = False, dry: bool = False) -> int:
@@ -74,7 +81,7 @@ def guarded_send(items: list, test: bool = False, dry: bool = False) -> int:
     if test:
         ok, skipped = items[:MAX_PER_RUN], []
     else:
-        fresh = [it for it in items if it["key"] not in pushed]
+        fresh = [it for it in items if not _seen(it, pushed)]
         ok = [it for it in fresh if it["time"] >= now - pd.Timedelta(hours=MAX_AGE_HOURS) and it["score"] >= THRESHOLD]
         room = max(0, min(MAX_PER_RUN, MAX_PER_HOUR - len(sent_times)))
         ok = sorted(ok, key=lambda x: -x["score"])[:room]
@@ -89,9 +96,17 @@ def guarded_send(items: list, test: bool = False, dry: bool = False) -> int:
             sent += 1
             sent_times.append(str(now))
     if not dry and not test:
-        pushed |= {it["key"] for it in ok} | {it["key"] for it in skipped}   # 被擋下的也記錄，之後不補發
+        for it in ok:
+            pushed |= {it["key"], *it.get("members", ())}
+        suppressed = set(st["suppressed"])
+        for it in skipped:
+            if "members" not in it:              # 分析師發文/文字訊息：被擋下的也記錄，之後不補發
+                pushed.add(it["key"])
+            elif it["score"] >= THRESHOLD:       # 事件：達門檻卻因限量/過舊沒送的另外記 (總結會列)；
+                suppressed.add(it["key"])        # 分數不足的不記，之後同事件有高分報導/重訊進來還能推
         STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(json.dumps({"pushed": sorted(pushed)[-20000:], "sent_times": sent_times}))
+        STATE.write_text(json.dumps({"pushed": sorted(pushed)[-40000:], "sent_times": sent_times,
+                                     "suppressed": sorted(suppressed)[-2000:]}))
     if skipped:
         print(f"防呆擋下 {len(skipped)} 則 (過舊 / 分數不足 / 超過限量)")
     return sent
@@ -148,9 +163,20 @@ def fmt(r, nm: dict, summ: dict | None = None) -> str:
     codes = [c for c in str(r.stocks).split(",") if c][:1]
     code = codes[0] if codes else "－"
     name = nm.get(code, "") if codes else "－"
-    link = f" <{r.id}>" if str(r.id).startswith("http") else ""
+    link = f" <{r.id}>" if str(r.id).startswith("http") else (
+        " <https://mops.twse.com.tw/mops/#/web/t21sc04_ifrs>" if str(r.id).startswith("rev-") else "")
     heat = f"|熱{r.heat:.0f}" if getattr(r, "heat", 0) and r.heat >= 3 else ""
     return f"{r.time:%Y-%m-%d %H:%M:%S} <{r.event_score:.1f}{heat}> {code} {name} {r.direction or '－'} <{r.title}>{link}"
+
+
+def members(sc: pd.DataFrame) -> dict:
+    """event_id → 事件內所有報導/公告的 id，外加「個股|類型|日期」(同一檔個股同類大事當天只推一次)。"""
+    out = sc.groupby("event_id")["id"].agg(lambda s: [str(x) for x in s]).to_dict()
+    if "merge_key" in sc:
+        for eid, mk, t in zip(sc["event_id"], sc["merge_key"], sc["time"]):
+            if mk:
+                out[eid].append(f"{mk}|{t:%Y-%m-%d}")
+    return out
 
 
 def instant(dry: bool, resend_hours: int = 0, test: bool = False) -> int:
@@ -160,8 +186,9 @@ def instant(dry: bool, resend_hours: int = 0, test: bool = False) -> int:
     best = recent.sort_values("event_score", ascending=False).drop_duplicates("event_id")
     if test:
         best = best[best["event_score"] >= THRESHOLD]
-    items = [{"key": r.event_id, "time": r.time, "score": float(r.event_score), "text": fmt(r, nm)}
-             for r in best.itertuples(index=False)]
+    mem = members(sc)
+    items = [{"key": r.event_id, "time": r.time, "score": float(r.event_score), "text": fmt(r, nm),
+              "members": mem.get(r.event_id, [])} for r in best.itertuples(index=False)]
     n = guarded_send(items, test=test, dry=dry)
     print(f"instant: 候選 {len(items)}，推送 {n}")
     return 0
@@ -173,10 +200,12 @@ def daily(dry: bool) -> int:
     today = now.normalize()
     # 08:20 盤前版：昨天 14:00 以後到現在；21:30 晚間版：今天 14:00 以後 (收盤後的重訊/新聞)
     start = (today - pd.Timedelta(days=1) if now.hour < 12 else today) + pd.Timedelta(hours=14)
-    g = sc[sc["time"] >= start]
-    g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("event_id").head(DAILY_TOP)
-    label = "盤前總結（昨 14:00 起）" if now.hour < 12 else "晚間總結（今 14:00 起）"
-    lines = [f"**{now:%Y-%m-%d %H:%M} {label}，前 {len(g)} 名**"]
+    g = sc[(sc["time"] >= start) & (sc["event_score"] >= THRESHOLD)]   # 總結也只列達門檻的；沒有就不發
+    g = g.sort_values(["score", "event_score"], ascending=False).drop_duplicates("event_id")
+    pushed, mem = set(_state()["pushed"]), members(sc)
+    g = g[[not _seen({"key": e, "members": mem.get(e, [])}, pushed) for e in g["event_id"]]].head(DAILY_TOP)
+    label = "盤前補漏（昨 14:00 起）" if now.hour < 12 else "晚間補漏（今 14:00 起）"   # 即時已推過的不再列
+    lines = [f"**{now:%Y-%m-%d %H:%M} {label}：達門檻但即時沒送出的 {len(g)} 則**"]
     for r in g.itertuples(index=False):
         lines.append(fmt(r, nm).replace(f"<{r.event_score:.1f}>", f"<{r.score:.1f}>"))
     msg = "\n".join(lines)
