@@ -77,16 +77,23 @@ WEIGHTS = {
     "raise_decision": 2.0, "raise_decision_cash": 2.5,              # 現金增資決議比其他籌資再高一點
     "raise_cold": -2.0,                                              # 興櫃/公開發行公司的籌資決議 (冷門，使用者不看)
     "drug_milestone": 5.0, 
+    "guidance": 4.0, "guidance_hot": 1.5, "call_negative": 2.5, "guidance_neg": 4.0,   # 法說/展望轉弱的具體訊號 (拉貨下滑、客戶下修、毛利率創新低)，方向空
+          # 法說 Memo 只有轉弱訊號時 (方向空)
+                              # 法說/展望的具體訊號 (資本支出上修、產能滿載/被預訂、倍數成長、上修財測)；熱門股再加
     "revenue_double": 3.0, "revenue_yoy_big": 1.0, "revenue_hot": 2.0,   # 月營收 月增+年增雙位數；年增≥50%；熱門股 (使用者：熱門股且雙位數成長要看到)
                                               # 新藥三期開展/解盲達標/藥證核准 (申請、送件不算)
                                               # 董事會決議辦理現增/私募/CB 本身就值得注意
     "analyst_source": 3.0,                                           # 分析師本人發文
     "regulatory": 4.0, "regulatory_restore": 2.0,                    # 變更交易方法/全額交割/處置 (方向空)；恢復普通交易 (方向多)
-    "raise_progress": 2.0,                                           # 代收價款行庫/收足股款：籌資進入執行階段
+    "raise_progress": 4.5,                                           # 代收價款行庫/收足股款：籌資進入執行階段 (使用者：要看到，原 2.0 永遠到不了門檻)
     "politics_no_industry": -1.0,                                    # 政要新聞沒有產業指向 (純政治)
     "foreign_partner": 5.0,                                          # 標題點名的台股與國外大廠合作/入股 (傳聞也算，不扣傳聞分)
     "raise_hot": 1.0,                                                # 籌資決議的公司是近期熱門股 (關注度偏高或近 5 日大漲)
-    "public_incident": 5.0,                                          # 罷工、波及大眾的工安 (砸到捷運/鐵路/民宅)；一般廠內工安不算
+    "public_incident": 5.0, 
+    "investigation": 4.5, "investigation_hot": 1.5, 
+    "transfer_market": 5.0, "transfer_other": 2.0, "transfer_hot": 1.5,   # 申報轉讓：一般交易 (在市場上賣，使用者一定要看到) / 鉅額、盤後定價 (參考) / 熱門股
+                      # 檢調搜索/約談/起訴/內線交易/掏空 (方向空)；熱門股再加
+                                             # 罷工、波及大眾的工安 (砸到捷運/鐵路/民宅)；一般廠內工安不算
     "tender_offer": 4.0, "tender_offer_update": 2.5,                # 公開收購 開始/條件 ；延長/進度/最後過戶
     "listing_day": 2.5,                                              # 增資/新股上市買賣日
     "attention_surge": 2.0, "attention_high": 1.0,                   # 異常關注度 (熱度用)：近 3 天新聞數 / 過去 60 天同長度平均
@@ -140,7 +147,19 @@ DRUG_NOT_RE = re.compile(r"申請|送件|提出|受理|擬|規劃|預計|拚|力
 BROKER_RE = re.compile(r"外資|瑞銀|UBS|大摩|摩根士丹利|小摩|摩根大通|高盛|美銀|花旗|麥格理|里昂|野村|匯豐|巴克萊|德意志|傑富瑞|Jefferies|伯恩斯坦|Bernstein|大和")
 RATING_UP_RE = re.compile(r"調升|上修|上調|調高|升評|升到|升至|喊買|喊進|買進|目標價.{0,12}(升|上看|喊)|重申買進")
 RATING_DOWN_RE = re.compile(r"調降|下修|下調|調低|降評|降到|降至|砍|賣出|目標價.{0,12}(降|下看)")
-STATEMENT_RE = re.compile(r"策略[:：]|看法|觀點")      # 既有業務的說明/表態，不是「切入新題材」的動作
+GUIDE_RE = re.compile(r"資本支出.{0,10}(上修|上調|增至|提高|拉高|翻倍|倍增|創新高|新高)|(上修|上調).{0,6}(展望|財測|全年|營收目標|出貨目標)"
+                      r"|產能.{0,6}(滿載|全滿|已滿|售罄|預訂|綁定|被訂|鎖定|吃緊)|(綁定|預訂|鎖定|包下).{0,6}產能"
+                      r"|倍數成長|訂單.{0,6}滿手|能見度.{0,8}(明年|後年|\d{4}年|一年|1年|到)|通過.{0,6}認證|認證(已)?通過|認證過關|取得.{0,4}認證|(明年|後年|年底|明年中)(?!.{0,8}(看不到|不會|無法|尚未|沒有)).{0,8}(量產|出貨)")
+NEGATED_RE = re.compile(r"(未見|未|不會|沒有|無|不致|不再|並未|免於)$")   # 「未見下滑」「不會減少」不是轉弱
+GUIDE_NEG_RE = re.compile(r"(拉貨|出貨|動能|需求|訂單|營收|業績).{0,6}(下滑|轉弱|轉淡|放緩|趨緩|衰退|減少)|(客戶|訂單|財測|展望|目標).{0,4}(下修|砍單|調降)"
+                          r"|毛利率.{0,8}(新低|下探|承壓|下滑)|買氣不如預期|不如預期|旺季不旺|保守看待|轉趨保守|減產|停產")
+GUIDE_TAGS = {"法說會", "財測", "資本支出/擴廠", "訂單/合約", "報價/供需"}
+STATEMENT_RE = re.compile(r"策略[:：]|看法|觀點")
+STATUS_QUO_RE = re.compile(r"聚焦|深耕|持續|穩健|估穩|維持|續航|雙位數成長|兩大事業|三大事業|雙旺|雙引擎|營運看俏")   # 既有業務的展望描述 (保勝光學「聚焦AOI、半導體…估穩」)，不是切入新題材
+_SUPPLY_MOD_RE = next(re.compile(m["text"]) for m in R.MODIFIERS if m["tag"] == "供應鏈變數")      # 既有業務的說明/表態，不是「切入新題材」的動作
+INVEST_RE = re.compile(r"搜索|檢調|調查局|地檢署|約談|羈押|聲押|起訴|內線交易|掏空|背信|侵占|詐欺|洗錢|裁罰|罰鍰|勒令|停業|吊銷|限制出境"
+                       r"|侵權|337\s*調查|專利(訴訟|爭議)|遭.{0,6}(提告|控告|告上|起訴|求償|索賠)|(提告|控告|求償|索賠|仲裁).{0,6}(台|鴻海|廣達|台達電)|被告")
+INVEST_NOT_RE = re.compile(r"澄清|否認|不實|無此|絕無|並無|未有|勝訴|獲判無罪|撤銷|解除")
 DENY_DAYS = 5                                      # 公司發重訊否認題材後 5 天內，報導同一件事的新聞不再給題材新穎/跨界分
 NOVEL_GRACE_DAYS = 14                              # 題材新穎度寬限：近 14 天才開始共現的仍算「新題材」
 FOCUS_MAX_STOCKS = 3                               # 題材新穎度只看「主角明確」的文章 (台股代號 ≤3 檔)
@@ -158,7 +177,10 @@ CROSS_THEMES = {"半導體", "CoWoS/先進封裝", "先進封裝", "HBM", "ASIC"
 SUPPLY_CHAIN_CONTEXT = CROSS_THEMES | {"鋼鐵/原物料", "面板", "鋼鐵", "塑化", "航運", "太陽能", "風電"}
 INDUSTRY_GLOB_CAP = INDUSTRY_GLOB
 ANALYST_GLOB = "/mnt/d/mops/news/analyst/分析師發文_*.parquet"
-REVENUE_GLOB = "/mnt/d/mops/month_revenue/月營收_*.parquet"   # MOPS 每月營收彙總表輪詢 (download_month_revenue.py)
+REVENUE_GLOB = "/mnt/d/mops/month_revenue/月營收_*.parquet"
+CALL_GLOB = "/mnt/d/mops/news/earnings_call/法說摘要_*.parquet"
+TRANSFER_GLOB = "/mnt/d/mops/insider_transfer/申報轉讓_*.parquet"   # 內部人申報轉讓 (download_insider_transfer.py)   # 法說會逐字稿/Memo (collect_earnings_calls.py)
+CALL_NEG_RE = re.compile(r"下修|下調|衰退|保守|疲弱|疲軟|放緩|趨緩|遞延|延後|虧損擴大|轉虧|減少|下滑|不如預期|低於預期|砍單|去化")   # MOPS 每月營收彙總表輪詢 (download_month_revenue.py)
 REV_MOM, REV_YOY, REV_YOY_BIG, REV_YOY_HUGE = 10.0, 10.0, 50.0, 100.0   # 月增、年增都達兩位數才算強勁；年增 ≥50% 再加；年增 ≥100% 不需熱門條件
 REV_MIN_TWD = 0.5e8                                          # 單月營收 <0.5 億不推 (使用者 2026-10-06)；營建類股 (建材營造) 不推
 HEAT_GLOB = "/mnt/d/mops/news/heat/熱度快照_*.parquet"
@@ -210,6 +232,42 @@ def load_events(since: str = "") -> pd.DataFrame:
                                                    for a, b, c, v in zip(rv["月增_pct"], rv["年增_pct"], rv["累計年增_pct"], rv["當月營收"].fillna(0))],
             "amount_twd": float("nan"),
         }))
+    files = sorted(glob.glob(CALL_GLOB))
+    if files:  # 法說會 Memo：每場一則事件，標題 = 第一個亮點；全部亮點與各段摘要放 data 供規則判讀
+        ec = pd.concat(pd.read_parquet(f) for f in files)
+        ec = ec[ec["公司代號"].str.fullmatch(r"[1-9]\d{3}")]
+        hl = [json.loads(x) if x else [] for x in ec["亮點"]]
+        parts.append(pd.DataFrame({
+            "source": "法說會", "id": "call-" + ec["uuid"],
+            # 法說當天抓到的用抓取時間；補抓到的舊場次用法說日 22:00 (不當成新事件推播)
+            "time": [t if t.strftime("%Y-%m-%d") == d else pd.Timestamp(f"{d} 22:00:00") for t, d in zip(pd.to_datetime(ec["抓取時間"]), ec["法說日期"])],
+            "title": [f"{n} {d[5:].replace('-', '/')} 法說會：{(h[0] if h else '(無亮點)')[:90]}" for n, d, h in zip(ec["公司名稱"], ec["法說日期"], hl)],
+            "stocks": ec["公司代號"], "tags": "法說會", "title_tags": "法說會", "modifiers": "", "entities": "", "themes": "", "title_themes": "",
+            "routine": False, "stance": "", "data": [json.dumps({"法說": {"亮點": h, "摘要": s}}, ensure_ascii=False) for h, s in zip(hl, ec["摘要"])],
+            "amount_twd": float("nan"),
+        }))
+    files = sorted(glob.glob(TRANSFER_GLOB))
+    if files:  # 申報轉讓：同公司同出表日併成一則 (贈與/信託不算，只看會在市場賣的)
+        tr = pd.concat(pd.read_parquet(f) for f in files)
+        tr = tr[tr["公司代號"].str.fullmatch(r"[1-9]\d{3}") & tr["轉讓方式"].str.contains("一般交易|鉅額|盤後定價", na=False)]
+        rows = []
+        for (code, day), g in tr.groupby(["公司代號", "出表日期"]):
+            g = g.sort_values("轉讓股數", ascending=False)
+            mkt = g[g["轉讓方式"].str.contains("一般交易")]
+            who = "、".join(f"{a} {b}" for a, b in zip(g["申報人身分"].str[:12], g["姓名"].str[:12]))[:60]
+            tot = g["轉讓股數"].sum()
+            pct = round(g["轉讓股數"].sum() / g["目前持股"].sum() * 100, 1) if g["目前持股"].sum() > 0 else None
+            rows.append({
+                "source": "申報轉讓", "id": f"tr-{code}-{day}", "time": pd.to_datetime(g["first_seen"].min()),
+                "title": f"{g['公司名稱'].iloc[0]} 申報轉讓 {tot / 1e3:,.0f} 張 ({'、'.join(dict.fromkeys(g['轉讓方式'].str.replace(r'\(.*\)', '', regex=True).str.strip()))})"
+                         + (f"，占申報人持股 {pct}%" if pct is not None else "") + f"：{who}",
+                "stocks": code, "tags": "大股東轉讓", "title_tags": "大股東轉讓", "modifiers": "", "entities": "", "themes": "", "title_themes": "",
+                "routine": False, "stance": "", "data": json.dumps({"申報轉讓": {"一般交易股數": float(mkt["轉讓股數"].sum()), "總股數": float(tot),
+                                                                   "占持股_pct": pct, "人數": int(len(g))}}, ensure_ascii=False),
+                "amount_twd": float("nan"),
+            })
+        if rows:
+            parts.append(pd.DataFrame(rows))
     files = sorted(glob.glob(ANALYST_GLOB))
     if files:  # 分析師本人發文 (Medium/X)：標題即文章首句；題材/對象從標題+內文判斷
         a = pd.concat(pd.read_parquet(f) for f in files)
@@ -426,7 +484,7 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
     W = WEIGHTS
     out = []
     for r in ev[ev["time"] >= pd.Timestamp(start)].itertuples(index=False):
-        if not r.tag_list and not r.ttheme_list and r.source != "月營收":
+        if not r.tag_list and not r.ttheme_list and r.source not in ("月營收", "法說會", "申報轉讓"):
             continue
         codes_all = [c for c in r.stock_list if c[:2].isdigit()]
         if codes_all and all(c.startswith("00") for c in codes_all):
@@ -463,7 +521,11 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
         if r.source != "重訊" and named and len(r.tw_list) <= FOCUS_MAX_STOCKS and PARTNER_RE.search(r.title) \
                 and not CANCEL_RE.search(r.title):
             rival = [c for c in named if re.search(rf"(追趕|挑戰|對抗|抗衡|叫陣|超車|取代|甩開|力抗|槓上).{{0,4}}({c}|{re.escape(mk.names.get(c, c))})", r.title)]
-            new = [(c, f) for c in named if c not in rival for f in _foreign(r.title)
+            showcase = re.search(r"攜手.{0,4}(子公司|集團|旗下)", r.title)     # 「攜手子公司」不是跟國外大廠合作
+            fo = [f for f in _foreign(r.title)
+                  if not re.search(rf"(秀|展示|展出|搭載|採用|導入|支援|相容|基於)\s*(?:{FOREIGN.get(f, re.escape(f))})", r.title)   # 秀 AMD 平台 = 產品展示
+                  and (f != "國際大廠" or re.search(r"入股|認購|引進|私募", r.title))]                                           # 泛稱只認入股/認購
+            new = [(c, f) for c in named if c not in rival and not showcase for f in fo
                    if _prior(idx, ("P", c, f), o - PARTNER_FRESH_DAYS) <= PARTNER_PRIOR_MAX
                    and _prior(idx, ("P", c, f), o - PARTNER_FRESH_DAYS) == _prior(idx, ("P", c, f), o - NOVEL_GRACE_DAYS)]
             if new:
@@ -473,7 +535,40 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                 and (r.source == "重訊" or named):
             partner = partner or f"{(named or r.tw_list)[0]}|新藥"
             s += W["drug_milestone"]; direction = direction or "多"; why.append(f"新藥里程碑 (三期/解盲/藥證) +{W['drug_milestone']}")
-        if r.tw and INCIDENT_RE.search(r.title):
+        news_like = r.source not in ("重訊", "月營收", "法說會", "申報轉讓")
+        if news_like and named and len(r.tw_list) <= FOCUS_MAX_STOCKS and (GUIDE_TAGS & tagset) \
+                and (gn := GUIDE_NEG_RE.search(r.title)) and not NEGATED_RE.search(r.title[max(gn.start() - 3, 0):gn.start()]) \
+                and not re.search(r"未見|未|不會|沒有|無", gn[0]) \
+                and not ({"疑問句", "行情描述"} & set(_split(r.modifiers))) and "機構評等" not in tagset:
+            partner = partner or f"{named[0]}|展望"
+            s += W["guidance_neg"]; direction = "空"; why.append(f"法說/展望轉弱訊號 ({GUIDE_NEG_RE.search(r.title)[0]}) +{W['guidance_neg']}")
+            h = hot(named[0], r.time)
+            if h:
+                s += W["guidance_hot"]; why.append(f"近期熱門股 ({h}) +{W['guidance_hot']}")
+        elif news_like and named and len(r.tw_list) <= FOCUS_MAX_STOCKS and (GUIDE_TAGS & tagset) \
+                and not re.search(r"(法人|外資|券商|分析師).{0,4}(上修|調高|估)", r.title) \
+                and not any(re.search(rf"(搶|挑戰|追趕|威脅|取代|對抗).{{0,6}}({c}|{re.escape(mk.names.get(c, c))})", r.title) for c in named) \
+                and GUIDE_RE.search(r.title) and not ({"疑問句", "行情描述"} & set(_split(r.modifiers))) and "機構評等" not in tagset:
+            partner = partner or f"{named[0]}|展望"
+            s += W["guidance"]; direction = direction or "多"; why.append(f"法說/展望具體訊號 ({GUIDE_RE.search(r.title)[0]}) +{W['guidance']}")
+            h = hot(named[0], r.time)
+            if h:
+                s += W["guidance_hot"]; why.append(f"近期熱門股 ({h}) +{W['guidance_hot']}")
+        iv = INVEST_RE.search(r.title)
+        if iv and r.tw and (r.source == "重訊" or (named and r.source not in ("月營收", "法說會"))) and not INVEST_NOT_RE.search(r.title) \
+                and not ({"疑問句", "行情描述"} & set(_split(r.modifiers))) \
+                and not re.search(r"(" + "|".join(FOREIGN.values()) + r").{0,4}$", r.title[:iv.start()]):
+            partner = partner or f"{'+'.join(sorted(named or r.tw_list[:3]))}|司法"   # 同一組個股的同一波搜索/調查/訴訟，當天併成一則
+            s += W["investigation"]; direction = "空"; why.append(f"檢調/司法/訴訟事件 ({iv[0]}) +{W['investigation']}")
+            if re.search(r"代.{0,6}子公司", r.title):
+                s += W["subsidiary"]; why.append(f"子公司事件 {W['subsidiary']}")
+            h = hot((named or r.tw_list)[0], r.time)
+            if h:
+                s += W["investigation_hot"]; why.append(f"近期熱門股 ({h}) +{W['investigation_hot']}")
+        inc = INCIDENT_RE.search(r.title)
+        if inc and re.search(r"(" + "|".join(FOREIGN.values()) + r").{0,4}$", r.title[:inc.start()]):
+            inc = None                                 # 「美光爆罷工」是國外公司的事，台股只是被提到
+        if r.tw and inc:
             partner = partner or f"{r.tw_list[0]}|事故"
             s += W["public_incident"]; direction = "空"; why.append(f"罷工/波及大眾的工安事故 +{W['public_incident']}")
         if r.tw and CANCEL_RE.search(r.title):
@@ -522,8 +617,12 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                         best = (c, th, ind, cross, share, since)
             if best and r.source != "重訊" and "機構評等" in tagset:
                 why.append("(券商評等報導，題材新穎不計)")
+            elif best and r.source != "重訊" and "公司活動" in _split(r.modifiers):
+                why.append("(公司活動/公關稿，題材新穎不計)")
             elif best and r.source != "重訊" and STATEMENT_RE.search(r.title):
                 why.append("(標題是策略/看法說明，題材新穎不計)")
+            elif best and r.source != "重訊" and STATUS_QUO_RE.search(r.title) and not re.search(r"切入|跨入|跨足|轉型|進軍|打入|第二成長|新事業", r.title):
+                why.append("(既有業務的展望描述，題材新穎不計)")
             elif best:
                 c, th, ind, cross, share, since = best
                 when = "首次" if since == 0 else f"{since} 天前才開始"
@@ -549,6 +648,10 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                 continue   # 「改變/取代/低於預期」在政治、總經、券商評等新聞也常見，只有在供應鏈題材脈絡下才算
             if m == "供應鏈變數" and not (str(r.source).startswith("分析師") or r.tw or R.mapped_entities(r.title)):
                 continue   # 沒有台股個股、也對不到對象概念股的國外總經/產業新聞，不算供應鏈變數
+            if m == "供應鏈變數" and not str(r.source).startswith("分析師") and not _SUPPLY_MOD_RE.search(r.title):
+                continue   # 新聞只認標題裡的供應鏈變數用語 (內文帶到的太常見)
+            if m in ("首創", "極端", "意外") and r.source != "重訊" and "營收" in tagset and "營收" in r.title:
+                continue   # 「營收創新高/首破」是營收報導的常態用語，營收本身由月營收事件評分
             if m in ("疑問句", "行情描述") and r.source == "重訊":
                 continue
             if m == "傳聞" and partner:
@@ -639,6 +742,50 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                         why.append(f"(單月仍虧損 EPS {m_eps})")
             if r.routine:
                 s += W["routine"]; why.append(f"例行公告 {W['routine']}")
+        # ---- 申報轉讓：一般交易 (市場上賣) 一定推；鉅額/盤後定價只標記；媒體的「申讓 N 張」報導比照 (常早於開放資料快照)
+        if r.source not in ("重訊", "申報轉讓", "月營收", "法說會") and named and re.search(r"申讓|申報轉讓", r.title) \
+                and not re.search(r"未轉讓|明細$", r.title):
+            partner = partner or f"{named[0]}|申報轉讓"
+            s += W["transfer_market"]; direction = "空"; why.append(f"內部人申報轉讓報導 +{W['transfer_market']}")
+            h = hot(named[0], r.time)
+            if h:
+                s += W["transfer_hot"]; why.append(f"近期熱門股 ({h}) +{W['transfer_hot']}")
+        if r.source == "申報轉讓":
+            tr = json.loads(r.data)["申報轉讓"]
+            partner = f"{r.stocks}|申報轉讓"
+            direction = "空"
+            if tr.get("一般交易股數", 0) > 0:
+                s += W["transfer_market"]; why.append(f"內部人申報轉讓 一般交易 {tr['一般交易股數'] / 1e3:,.0f} 張 +{W['transfer_market']}")
+                h = hot(r.stocks, r.time)
+                if h:
+                    s += W["transfer_hot"]; why.append(f"近期熱門股 ({h}) +{W['transfer_hot']}")
+            else:
+                s += W["transfer_other"]; why.append(f"內部人申報轉讓 (鉅額/盤後定價) +{W['transfer_other']}")
+        # ---- 法說會 Memo：亮點與各段摘要裡找具體訊號 (同新聞的 GUIDE_RE)；只有轉弱訊號時方向空
+        if r.source == "法說會":
+            call = json.loads(r.data)["法說"]
+            texts = list(call.get("亮點") or [])
+            try:
+                for sec in json.loads(call.get("摘要") or "{}").values():
+                    texts += sec.get("items") or []
+            except Exception:  # noqa: BLE001
+                pass
+            blob = "\n".join(texts)
+            hits = list(dict.fromkeys(m[0] for m in GUIDE_RE.finditer(blob) if not NEGATED_RE.search(blob[max(m.start() - 3, 0):m.start()])))
+            hl = "\n".join(call.get("亮點") or [])
+            negs = list(dict.fromkeys(m[0] for m in CALL_NEG_RE.finditer(hl) if not NEGATED_RE.search(hl[max(m.start() - 3, 0):m.start()])))   # 轉弱只看亮點，「未見下滑」不算
+            partner = f"{r.stocks}|展望"
+            if hits:
+                s += W["guidance"]; direction = "多"; why.append(f"法說具體訊號 ({'、'.join(hits[:4])}) +{W['guidance']}")
+                h = hot(r.stocks, r.time)
+                if h:
+                    s += W["guidance_hot"]; why.append(f"近期熱門股 ({h}) +{W['guidance_hot']}")
+                if negs:
+                    why.append(f"(同時有轉弱用語：{'、'.join(negs[:3])})")
+            elif negs:
+                s += W["call_negative"]; direction = "空"; why.append(f"法說轉弱訊號 ({'、'.join(negs[:4])}) +{W['call_negative']}")
+            else:
+                why.append("(法說 Memo 無具體訊號)")
         # ---- 月營收公告：月增與年增都兩位數 + 熱門股才到門檻；其餘留在檢視表
         if r.source == "月營收":
             rv = json.loads(r.data)["月營收"]
@@ -648,8 +795,9 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                 why.append("(營建類股營收隨完工認列波動，不評)")
             elif rv.get("當月營收_元", 0) < REV_MIN_TWD:
                 why.append(f"(單月營收 {rv.get('當月營收_元', 0) / 1e8:.2f} 億 < {REV_MIN_TWD / 1e8:.1f} 億，不評)")
-            elif mom is not None and yoy is not None and mom >= REV_MOM and yoy >= REV_YOY:
-                s += W["revenue_double"]; direction = "多"; why.append(f"月增 {mom:+.1f}%、年增 {yoy:+.1f}% 皆達兩位數 +{W['revenue_double']}")
+            elif mom is not None and yoy is not None and ((mom >= REV_MOM and yoy >= REV_YOY) or yoy >= REV_YOY_HUGE):
+                s += W["revenue_double"]; direction = "多"     # 年增 ≥100% 即使月減也算 (使用者：川湖 月減 31%、年增 196% 要看到)
+                why.append(f"月增 {mom:+.1f}%、年增 {yoy:+.1f}% {'皆達兩位數' if mom >= REV_MOM else '(年增 ≥100%)'} +{W['revenue_double']}")
                 if yoy >= REV_YOY_BIG:
                     s += W["revenue_yoy_big"]; why.append(f"年增 ≥{REV_YOY_BIG:.0f}% +{W['revenue_yoy_big']}")
                 h = hot(r.stocks, r.time)
@@ -749,8 +897,8 @@ def assign_events(sc: pd.DataFrame) -> pd.DataFrame:
         best, best_sim = None, 0.0
         for j in range(start, i):
             tw2, ent2, bg2, num2, mkey2 = feats[j]
-            if mkey and mkey == mkey2 and times[i].date() == times[eid[j]].date():
-                # 同一檔個股的同類大事 (國外合作/跨界/新藥/事故) 當天併成一則；隔天的後續進展算新事件 (使用者要再看到)
+            if mkey and mkey == mkey2 and (times[i].date() == times[eid[j]].date() or times[i] - times[eid[j]] <= pd.Timedelta(hours=14)):
+                # 同一檔個股的同類大事 (國外合作/跨界/新藥/事故/司法) 當天或 14 小時內併成一則 (晚間事件隔天清晨的跟進報導不再推)；隔天的後續進展算新事件
                 best, best_sim = j, 1.0
                 break
             if srcs[i] == "重訊" and srcs[j] == "重訊":

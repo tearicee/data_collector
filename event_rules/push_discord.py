@@ -164,7 +164,9 @@ def fmt(r, nm: dict, summ: dict | None = None) -> str:
     code = codes[0] if codes else "－"
     name = nm.get(code, "") if codes else "－"
     link = f" <{r.id}>" if str(r.id).startswith("http") else (
-        " <https://mops.twse.com.tw/mops/#/web/t21sc04_ifrs>" if str(r.id).startswith("rev-") else "")
+        " <https://mops.twse.com.tw/mops/#/web/t21sc04_ifrs>" if str(r.id).startswith("rev-") else
+        f" <https://www.alphamemo.ai/free-transcripts/{str(r.id)[5:]}>" if str(r.id).startswith("call-") else
+        " <https://mops.twse.com.tw/mops/#/web/t56sb21_q1>" if str(r.id).startswith("tr-") else "")
     heat = f"|熱{r.heat:.0f}" if getattr(r, "heat", 0) and r.heat >= 3 else ""
     return f"{r.time:%Y-%m-%d %H:%M:%S} <{r.event_score:.1f}{heat}> {code} {name} {r.direction or '－'} <{r.title}>{link}"
 
