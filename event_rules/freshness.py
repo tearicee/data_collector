@@ -157,7 +157,7 @@ GUIDE_NEG_RE = re.compile(r"(拉貨|出貨|動能|需求|訂單|營收|業績).{
                           r"|毛利率.{0,8}(新低|下探|承壓|下滑)|買氣不如預期|不如預期|旺季不旺|保守看待|轉趨保守|減產|停產")
 GUIDE_TAGS = {"法說會", "財測", "資本支出/擴廠", "訂單/合約", "報價/供需"}
 STATEMENT_RE = re.compile(r"策略[:：]|看法|觀點")
-SPILL_NEG_RE = re.compile(r"受害|受衝擊|衝擊|中槍|受累|拖累|受災|開法會|受壓|利空|殃及|遭殃|掃到|重傷|連跌")
+SPILL_NEG_RE = re.compile(r"受害|受衝擊|衝擊|中槍|受累|拖累|受災|開了?法會|受壓|利空|殃及|遭殃|掃到|重傷|連跌|致命傷")
 SPILL_POS_RE = re.compile(r"受惠|沾光|利多|帶旺|補丸|吃補|受益|加單|轉單")
 RATING_REASON_RE = re.compile(r"產能|需求|訂單|毛利|出貨|拉貨|良率|報價|庫存|擴產|效率|競爭")
 STATUS_QUO_RE = re.compile(r"聚焦|深耕|持續|穩健|估穩|維持|續航|雙位數成長|兩大事業|三大事業|雙旺|雙引擎|營運看俏")   # 既有業務的展望描述 (保勝光學「聚焦AOI、半導體…估穩」)，不是切入新題材
@@ -576,7 +576,18 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
         if news_like and 2 <= len(named) <= FOCUS_MAX_STOCKS:
             sp_neg = SPILL_NEG_RE.search(r.title)
             # 受害股 = 名字緊鄰受害用語的那檔 (「友達躺著也中槍」「鴻海衰被大立光掃到」)；龍頭 = 其餘且為熱門股或台系龍頭
-            victims = [c for c in named if re.search(rf"{re.escape(mk.names.get(c, c))}.{{0,12}}(?:{SPILL_NEG_RE.pattern})|(?:{SPILL_NEG_RE.pattern}).{{0,4}}{re.escape(mk.names.get(c, c))}", r.title)]
+            # 「X被Y…」X 是受害股；否則取名字離受害用語最近的那檔
+            victims = [c for c in named if re.search(rf"{re.escape(mk.names.get(c, c))}.{{0,2}}被", r.title)]
+            if not victims and sp_neg:
+                dist = {}
+                for c in named:
+                    for m in re.finditer(re.escape(mk.names.get(c, c)), r.title):
+                        for h_ in SPILL_NEG_RE.finditer(r.title):
+                            dd = h_.start() - m.end() if h_.start() >= m.end() else m.start() - h_.end()
+                            if 0 <= dd <= 12:
+                                dist[c] = min(dist.get(c, 99), dd)
+                if dist:
+                    victims = [min(dist, key=dist.get)]
             leaders = [c for c in named if c not in victims and (hot(c, r.time) or re.search(R.ENTITIES["台系龍頭"], mk.names.get(c, c)))]
             if sp_neg and leaders and victims:
                 partner = partner or f"{'+'.join(sorted(victims))}|外溢"
