@@ -482,6 +482,12 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             return f"近3天 {recent} 則、{ratio:.1f} 倍"
         ru = mk.runup(t, c)
         return f"近 {RUNUP_DAYS} 日漲 {ru}%" if ru is not None and ru >= RUNUP_PCT else ""
+    sanctioned = defaultdict(list)                 # 個股 → 本身被變更交易/全額交割/處置/終止買賣的日序 (公司債到期下櫃、收購他人下市不算)
+    sm = ev["tags"].str.contains("監管處分", na=False) & ~ev["title"].str.contains(r"公司債|收購|併購|私有化|股份轉換", na=False)
+    for c, d in zip(ev.loc[sm, "stocks"], ev.loc[sm, "day"]):
+        for cc in str(c).split(",")[:1]:
+            if cc[:4].isdigit():
+                sanctioned[cc].append(d.toordinal())
     denied = defaultdict(list)                     # 個股 → 公司發重訊否認的時間
     for c, t in zip(ev.loc[ev["stance"] == "否認", "stocks"], ev.loc[ev["stance"] == "否認", "time"]):
         denied[c].append(t)
@@ -824,7 +830,7 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             rv = json.loads(r.data)["月營收"]
             mom, yoy = rv.get("月增_pct"), rv.get("年增_pct")
             partner = f"{r.stocks}|月營收"
-            if _prior(idx, ("S", r.stocks, "監管處分"), o) - _prior(idx, ("S", r.stocks, "監管處分"), o - 45) > 0:
+            if any(o - 45 <= dd <= o for dd in sanctioned.get(r.stocks, [])):
                 why.append("(近 45 天有變更交易/終止買賣等處分，營收不評；使用者：維格餅家)")
             elif mk.industry.get(r.stocks, "") == "建材營造":
                 why.append("(營建類股營收隨完工認列波動，不評)")
