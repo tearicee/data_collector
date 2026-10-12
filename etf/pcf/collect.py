@@ -197,7 +197,9 @@ def collect(root: Path | None = None, codes: str | None = None, since: str | Non
                         stats["latest"][code] = max(have_s)
                 except Exception as e:                          # noqa: BLE001
                     stats["failed"].append(code)
-                    print(f"[pcf][error] {issuer} {code}: {type(e).__name__}: {e}", file=sys.stderr)
+                    # 只留第一行：playwright 的錯誤訊息會附整段請求標頭 (含 cookie)，進告警只是雜訊
+                    first = str(e).splitlines()[0] if str(e) else ""
+                    print(f"[pcf][error] {issuer} {code}: {type(e).__name__}: {first}", file=sys.stderr)
                 if frames:                                      # 中途失敗也把已抓到的日子存起來
                     n = len(frames)
                     if not dry_run:

@@ -16,6 +16,8 @@ bonds(債券)；assets(保證金現金)/rps(附買回) 屬現金管理，不納�
 from __future__ import annotations
 
 import json
+import sys
+import time
 
 import pandas as pd
 
@@ -24,6 +26,9 @@ from base import IssuerAdapter, register
 BASE = "https://www.capitalfund.com.tw/CFWeb/api"
 BUYBACK_PAGE = "https://www.capitalfund.com.tw/etf/transaction/buyback"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0"
+POST_TIMEOUT_MS = 30000     # 群益 API 單次請求逾時
+POST_RETRIES = 2            # 逾時重試次數 (2026-10 一週內 3 次單檔逾時都是偶發，重試就好)
+RETRY_WAIT_S = 5
 
 
 def _decode_json(resp):
@@ -59,12 +64,25 @@ class CapitalAdapter(IssuerAdapter):
         self._page.goto(BUYBACK_PAGE, wait_until="networkidle", timeout=60000)
         self._page.wait_for_timeout(1500)
         # 建 stockNo → fundId 映射
-        r = self._page.request.post(f"{BASE}/etf/items", data="{}",
-                                    headers={"Content-Type": "application/json",
-                                             "Referer": BUYBACK_PAGE})
-        items = (_decode_json(r) or {}).get("data") or []
+        items = (self.post(f"{BASE}/etf/items", {}) or {}).get("data") or []
         self._map = {x["stockNo"]: x["fundNo"] for x in items
                      if x.get("stockNo") and x.get("fundNo")}
+
+    def post(self, url: str, body: dict, retries: int = POST_RETRIES) -> dict | None:
+        """群益 API 偶發 30 秒逾時，逾時就等一下再試；其餘錯誤照丟。pcf/sources.py 也走這裡。"""
+        for attempt in range(retries + 1):
+            try:
+                r = self._page.request.post(url, data=json.dumps(body), timeout=POST_TIMEOUT_MS,
+                                            headers={"Content-Type": "application/json",
+                                                     "Referer": BUYBACK_PAGE})
+                return _decode_json(r)
+            except Exception as e:                       # noqa: BLE001  playwright TimeoutError 無共同基底可 catch
+                if "Timeout" not in type(e).__name__ or attempt >= retries:
+                    raise
+                print(f"[raw] 群益 {url.rsplit('/', 1)[-1]} 逾時，{RETRY_WAIT_S}s 後重試 "
+                      f"({attempt + 1}/{retries})", file=sys.stderr)
+                time.sleep(RETRY_WAIT_S)
+        return None
 
     def fetch(self, fund_code: str, date: str) -> pd.DataFrame:
         self._ensure()
@@ -72,11 +90,7 @@ class CapitalAdapter(IssuerAdapter):
         if not fund_id:
             raise ValueError(f"群益清單無此代號 {fund_code}")
 
-        r = self._page.request.post(
-            f"{BASE}/etf/buyback",
-            data=json.dumps({"fundId": fund_id, "date": None}),
-            headers={"Content-Type": "application/json", "Referer": BUYBACK_PAGE})
-        d = _decode_json(r) or {}
+        d = self.post(f"{BASE}/etf/buyback", {"fundId": fund_id, "date": None}) or {}
         data = d.get("data") or {}
         pcf = data.get("pcf") or {}
 

@@ -133,7 +133,8 @@ def run(codes: list[str], date: str) -> dict:
                 print(f"[raw] {issuer} {code} 無資料: {e}")
                 nodata.append(code)
             except Exception as e:                        # noqa: BLE001
-                print(f"[raw][error] {issuer} {code} 失敗: {e}", file=sys.stderr)
+                first = str(e).splitlines()[0] if str(e) else type(e).__name__   # 只留第一行，不帶請求標頭
+                print(f"[raw][error] {issuer} {code} 失敗: {first}", file=sys.stderr)
                 failed.append(code)
             time.sleep(SLEEP_BETWEEN)
         # 該發行商處理完，立即釋放資源 (playwright browser 及時關閉)

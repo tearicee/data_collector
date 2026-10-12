@@ -401,10 +401,7 @@ class Capital(Source):
             fund_id = self.ad._map.get(code)
             if not fund_id:
                 raise ValueError(f"群益清單無此代號 {code}")
-            r = self.ad._page.request.post(self.URL, data=json.dumps({"fundId": fund_id, "date": day}),
-                                           headers={"Content-Type": "application/json",
-                                                    "Referer": capital.BUYBACK_PAGE})
-            d = capital._decode_json(r) or {}
+            d = self.ad.post(self.URL, {"fundId": fund_id, "date": day}) or {}   # 逾時會重試
             self._cache[key] = d.get("data") or {}
         return self._cache[key]
 
