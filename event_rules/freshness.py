@@ -824,7 +824,9 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             rv = json.loads(r.data)["月營收"]
             mom, yoy = rv.get("月增_pct"), rv.get("年增_pct")
             partner = f"{r.stocks}|月營收"
-            if mk.industry.get(r.stocks, "") == "建材營造":
+            if _prior(idx, ("S", r.stocks, "監管處分"), o) - _prior(idx, ("S", r.stocks, "監管處分"), o - 45) > 0:
+                why.append("(近 45 天有變更交易/終止買賣等處分，營收不評；使用者：維格餅家)")
+            elif mk.industry.get(r.stocks, "") == "建材營造":
                 why.append("(營建類股營收隨完工認列波動，不評)")
             elif rv.get("當月營收_元", 0) < REV_MIN_TWD:
                 why.append(f"(單月營收 {rv.get('當月營收_元', 0) / 1e8:.2f} 億 < {REV_MIN_TWD / 1e8:.1f} 億，不評)")
