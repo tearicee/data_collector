@@ -71,7 +71,9 @@ WEIGHTS = {
     "theme_cross": 3.5,                            # 產業×題材 罕見 (跨界)，與 theme_first 疊加；單憑跨界即達推播門檻
     "mod_首創": 1.5, "mod_極端": 1.5, "mod_轉折": 1.0, "mod_意外": 0.5, "mod_傳聞": -1.0,
     "mod_供應鏈變數": 2.0, "mod_總經數據": -1.5, "mod_公司活動": -2.0, "mod_疑問句": -2.5, "mod_行情描述": -1.5,
-    "foreign_rating": 1.5,                                           # 外資對標題點名個股明確調升/調降評等或目標價 (參考用，不到推播門檻)
+    "foreign_rating": 1.5, "rating_reason": 2.5,                    # 外資升降評若標題帶具體營運理由 (產能受考驗/需求/訂單/毛利) 再加 → 可達門檻 (使用者：上詮大摩降評要發送)
+    "spillover": 4.0,                                                # 龍頭法說/事件點名的受害或受惠股 (友達被大立光「開法會」)
+                                              # 外資對標題點名個股明確調升/調降評等或目標價 (參考用，不到推播門檻)
     "analyst_rating": -1.5,                                          # 券商目標價/評等類報導
     "raise_big": 2.0, "raise_mid": 1.0, "subsidiary": -1.0,          # 籌資占股本 ≥20% / 10~20%；代子公司事件
     "raise_decision": 2.0, "raise_decision_cash": 2.5,              # 現金增資決議比其他籌資再高一點
@@ -155,6 +157,9 @@ GUIDE_NEG_RE = re.compile(r"(拉貨|出貨|動能|需求|訂單|營收|業績).{
                           r"|毛利率.{0,8}(新低|下探|承壓|下滑)|買氣不如預期|不如預期|旺季不旺|保守看待|轉趨保守|減產|停產")
 GUIDE_TAGS = {"法說會", "財測", "資本支出/擴廠", "訂單/合約", "報價/供需"}
 STATEMENT_RE = re.compile(r"策略[:：]|看法|觀點")
+SPILL_NEG_RE = re.compile(r"受害|受衝擊|衝擊|中槍|受累|拖累|受災|開法會|受壓|利空|殃及|遭殃|掃到|重傷|連跌")
+SPILL_POS_RE = re.compile(r"受惠|沾光|利多|帶旺|補丸|吃補|受益|加單|轉單")
+RATING_REASON_RE = re.compile(r"產能|需求|訂單|毛利|出貨|拉貨|良率|報價|庫存|擴產|效率|競爭")
 STATUS_QUO_RE = re.compile(r"聚焦|深耕|持續|穩健|估穩|維持|續航|雙位數成長|兩大事業|三大事業|雙旺|雙引擎|營運看俏")   # 既有業務的展望描述 (保勝光學「聚焦AOI、半導體…估穩」)，不是切入新題材
 _SUPPLY_MOD_RE = next(re.compile(m["text"]) for m in R.MODIFIERS if m["tag"] == "供應鏈變數")      # 既有業務的說明/表態，不是「切入新題材」的動作
 INVEST_RE = re.compile(r"搜索|檢調|調查局|地檢署|約談|羈押|聲押|起訴|內線交易|掏空|背信|侵占|詐欺|洗錢|裁罰|罰鍰|勒令|停業|吊銷|限制出境"
@@ -565,6 +570,18 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             h = hot((named or r.tw_list)[0], r.time)
             if h:
                 s += W["investigation_hot"]; why.append(f"近期熱門股 ({h}) +{W['investigation_hot']}")
+        # ---- 龍頭法說/事件點名的受害股 (使用者：要推)：標題點名 2~3 檔台股，其中一檔是近期熱門股 (龍頭)，另一檔被說成受害。
+        #      受惠清單 (「XX、YY 等受惠」) 多是概念股彙整，不算。疑問句/行情用語的受害報導仍算 (「友達躺著也中槍」)。
+        if news_like and 2 <= len(named) <= FOCUS_MAX_STOCKS:
+            sp_neg = SPILL_NEG_RE.search(r.title)
+            # 受害股 = 名字緊鄰受害用語的那檔 (「友達躺著也中槍」「鴻海衰被大立光掃到」)；龍頭 = 其餘且為熱門股或台系龍頭
+            victims = [c for c in named if re.search(rf"{re.escape(mk.names.get(c, c))}.{{0,12}}(?:{SPILL_NEG_RE.pattern})|(?:{SPILL_NEG_RE.pattern}).{{0,4}}{re.escape(mk.names.get(c, c))}", r.title)]
+            leaders = [c for c in named if c not in victims and (hot(c, r.time) or re.search(R.ENTITIES["台系龍頭"], mk.names.get(c, c)))]
+            if sp_neg and leaders and victims:
+                partner = partner or f"{'+'.join(sorted(victims))}|外溢"
+                s += W["spillover"]; direction = "空"
+                why.append(f"龍頭 {'/'.join(mk.names.get(c, c) for c in leaders[:2])} 點名的受害股 "
+                           f"{'/'.join(mk.names.get(c, c) for c in victims[:3])} ({sp_neg[0]}) +{W['spillover']}")
         inc = INCIDENT_RE.search(r.title)
         if inc and re.search(r"(" + "|".join(FOREIGN.values()) + r").{0,4}$", r.title[:inc.start()]):
             inc = None                                 # 「美光爆罷工」是國外公司的事，台股只是被提到
@@ -638,6 +655,10 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
         if rating and named and BROKER_RE.search(r.title) and bool(up) != bool(down) and "疑問句" not in r.modifiers:
             s += W["foreign_rating"]; direction = direction or ("多" if up else "空")
             why.append(f"外資{'調升' if up else '調降'}評等/目標價 +{W['foreign_rating']}")
+            rr = RATING_REASON_RE.search(r.title)
+            if rr and "行情描述" not in r.modifiers:
+                partner = partner or f"{named[0]}|評等"
+                s += W["rating_reason"]; why.append(f"評等附具體營運理由 ({rr[0]}) +{W['rating_reason']}")
         elif rating:
             s += W["analyst_rating"]; why.append(f"券商目標價/評等報導 {W['analyst_rating']}")
         anchored = bool(r.tw or r.ent_list or R.mapped_entities(r.title) or str(r.source).startswith("分析師"))
