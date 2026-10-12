@@ -489,7 +489,8 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
     W = WEIGHTS
     out = []
     for r in ev[ev["time"] >= pd.Timestamp(start)].itertuples(index=False):
-        if not r.tag_list and not r.ttheme_list and r.source not in ("月營收", "法說會", "申報轉讓"):
+        if not r.tag_list and not r.ttheme_list and r.source not in ("月營收", "法說會", "申報轉讓") \
+                and not (len(r.tw_list) >= 2 and SPILL_NEG_RE.search(r.title)):   # 「友達躺著也中槍」這類沒有事件標籤的受害報導也要評
             continue
         codes_all = [c for c in r.stock_list if c[:2].isdigit()]
         if codes_all and all(c.startswith("00") for c in codes_all):
