@@ -71,6 +71,10 @@ IMPERSONATE = {"中時新聞網"}
 UDN_API = "https://udn.com/api/more"
 UDN_CATES = {"6644": "產經", "6645": "股市"}
 UDN_MAX_PAGES = 25
+# 分類列表 (cate_latest_news) 比文章實際上線晚約 60~130 分鐘 (2026-10-12 量測)；「即時」(breaknews) 是即時的，
+# 但混所有頻道，用故事連結 /story/<cate>/ 只留財經類 (既有聯合新聞網連結的分類統計)
+UDN_FIN_CATES = {"7252", "7241", "7240", "123006", "7239", "7251", "7238", "7255", "12806", "7243", "121591", "10103", "6811", "7333", "6644", "6645"}
+UDN_BREAK_PAGES = 8
 BODY_XPATH = {  # 原文頁的內文段落
     "聯合新聞網": "//section[contains(@class,'article-content__editor')]//p",
     "經濟日報": "//section[contains(@class,'article-body__editor')]//p",
@@ -280,6 +284,36 @@ def udn_rows(cate: str, since: datetime) -> list:
     return rows
 
 
+def udn_breaknews(since: datetime) -> list:
+    """聯合新聞網即時列表 (全頻道，20 則/頁)，只留財經分類；翻到早於 since 為止。"""
+    rows = []
+    for page in range(1, UDN_BREAK_PAGES + 1):
+        time.sleep(random.uniform(*SLEEP))
+        lists = get(UDN_API, params={"page": page, "channelId": 2, "type": "breaknews", "totalRecNo": 200},
+                    headers={"Referer": "https://udn.com/news/breaknews/1"}).json().get("lists") or []
+        if not lists:
+            break
+        old = 0
+        for it in lists:
+            pub = datetime.strptime(it["time"]["date"], "%Y-%m-%d %H:%M")
+            if pub < since:
+                old += 1
+                continue
+            m = re.search(r"/story/(\d+)/", it.get("titleLink") or "")
+            if not m or m[1] not in UDN_FIN_CATES:
+                continue
+            rows.append({
+                "發布時間": pub.strftime("%Y-%m-%d %H:%M:%S"), "來源": "聯合新聞網", "分類": "即時",
+                "標題": clean_html(it.get("title")), "摘要": clean_html(it.get("paragraph")),
+                "內文": clean_html(it.get("paragraph")),
+                "連結": "https://udn.com" + clean_link(it["titleLink"]), "個股代號": "", "關鍵字": "",
+                "抓取時間": ts(),
+            })
+        if old == len(lists):
+            break
+    return rows
+
+
 def with_fulltext(source: str, rows: list) -> list:
     """濾掉已存連結，其餘逐篇抓完整內文。"""
     have = set().union(*(store.existing_links(ym) for ym in {r["發布時間"][:7] for r in rows})) if rows else set()
@@ -319,6 +353,11 @@ def poll(hours: int) -> int:
             stats[f"聯合新聞網-{name}"] = (len(rows), store.upsert(rows))
         except Exception as e:  # noqa: BLE001
             errors.append(f"聯合新聞網-{name}: {e}")
+    try:   # 即時列表先抓 (分類列表晚 1~2 小時)，已存的連結 upsert 不覆寫
+        rows = with_fulltext("聯合新聞網", udn_breaknews(since))
+        stats["聯合新聞網-即時"] = (len(rows), store.upsert(rows))
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"聯合新聞網-即時: {e}")
     new = sum(v[1] for v in stats.values())
     log("poll " + " ".join(f"{k}={a}/{n}新" for k, (a, n) in stats.items()) + f" 合計新增 {new}")
     for e in errors:
