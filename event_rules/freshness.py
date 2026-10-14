@@ -101,6 +101,8 @@ WEIGHTS = {
     "attention_surge": 2.0, "attention_high": 1.0,                   # 異常關注度 (熱度用)：近 3 天新聞數 / 過去 60 天同長度平均
     "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
     "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
+    "selfreport_q_big": 4.5, "selfreport_q_both": 1.0,              # 季自結 EPS 較上季或去年同季 ≥50% (兩者都 ≥50% 再加)
+    "rival_breakthrough": 4.0,                                       # 國外競爭者技術突破/量產領先，衝擊台股題材 (長鑫 4F² DRAM)；方向空
     "selfreport_chg": 1.5, "selfreport_chg_big": 4.5, "selfreport_both": 1.0, "selfreport_loss_runup": 1.0, "multi_source": 0.5,
     "mkt_stock_limit": 2.0, "mkt_stock_big": 1.0, "mkt_theme_strong": 2.0, "mkt_theme_mild": 1.0, "mkt_cap": 3.0,
 }
@@ -151,11 +153,15 @@ RATING_UP_RE = re.compile(r"調升|上修|上調|調高|升評|升到|升至|喊
 RATING_DOWN_RE = re.compile(r"調降|下修|下調|調低|降評|降到|降至|砍|賣出|目標價.{0,12}(降|下看)")
 GUIDE_RE = re.compile(r"資本支出.{0,10}(上修|上調|增至|提高|拉高|翻倍|倍增|創新高|新高)|(上修|上調).{0,6}(展望|財測|全年|營收目標|出貨目標)"
                       r"|產能.{0,6}(滿載|全滿|已滿|售罄|預訂|綁定|被訂|鎖定|吃緊)|(綁定|預訂|鎖定|包下).{0,6}產能"
-                      r"|倍數成長|訂單.{0,6}滿手|能見度.{0,8}(明年|後年|\d{4}年|一年|1年|到)|通過.{0,6}認證|認證(已)?通過|認證過關|取得.{0,4}認證|(明年|後年|年底|明年中)(?!.{0,8}(看不到|不會|無法|尚未|沒有)).{0,8}(量產|出貨)")
+                      r"|倍數成長|訂單.{0,6}滿手|能見度.{0,8}(明年|後年|\d{4}年|一年|1年|到)|預付款|長約|產能保障|包下產能|綁.{0,4}產能|鎖定.{0,4}產能|通過.{0,6}認證|認證(已)?通過|認證過關|取得.{0,4}認證|(明年|後年|年底|明年中)(?!.{0,8}(看不到|不會|無法|尚未|沒有)).{0,8}(量產|出貨)")
 NEGATED_RE = re.compile(r"(未見|未|不會|沒有|無|不致|不再|並未|免於)$")   # 「未見下滑」「不會減少」不是轉弱
 GUIDE_NEG_RE = re.compile(r"(拉貨|出貨|動能|需求|訂單|營收|業績).{0,6}(下滑|轉弱|轉淡|放緩|趨緩|衰退|減少)|(客戶|訂單|財測|展望|目標).{0,4}(下修|砍單|調降)"
                           r"|毛利率.{0,8}(新低|下探|承壓|下滑)|買氣不如預期|不如預期|旺季不旺|保守看待|轉趨保守|減產|停產")
 GUIDE_TAGS = {"法說會", "財測", "資本支出/擴廠", "訂單/合約", "報價/供需"}
+RIVAL_RE = re.compile(r"(技術|量產|設計|架構|製程|晶片|產品|良率).{0,6}(突破|領先|超前|進展|搶先|改寫|超車)|(突破|領先|超前|搶先|超車|追上|改寫|趕上).{0,8}(技術|量產|設計|架構|製程|三星|SK海力士|海力士|輝達|NVIDIA|台積電|美光)"
+                      r"|提前.{0,4}量產|完成.{0,8}(設計|開發)|領先.{0,4}\d+\s*年|超前.{0,4}\d+\s*年")
+RIVAL_NOT_RE = re.compile(r"待突破|成.{0,4}突破關鍵|瓶頸|受制|尚未突破")
+FIN_GLOB = "/mnt/d/finmind_data/TaiwanStockFinancialStatements/*/TaiwanStockFinancialStatements_*.parquet"
 STATEMENT_RE = re.compile(r"策略[:：]|看法|觀點")
 SPILL_NEG_RE = re.compile(r"受害|受衝擊|衝擊|中槍|受累|拖累|受災|開了?法會|受壓|利空|殃及|遭殃|掃到|重傷|連跌|致命傷")
 SPILL_POS_RE = re.compile(r"受惠|沾光|利多|帶旺|補丸|吃補|受益|加單|轉單")
@@ -420,6 +426,19 @@ def _selfreports(ev: pd.DataFrame) -> dict:
     return out
 
 
+def _quarter_eps(since_year: int) -> dict:
+    """(個股, 'YYYYQn') → 單季 EPS，來自 FinMind 財報 (季自結比較用)。"""
+    out = {}
+    for f in sorted(glob.glob(FIN_GLOB)):
+        if f[-18:-14].isdigit() and int(f[-18:-14]) >= since_year:
+            d = pd.read_parquet(f, columns=["date", "stock_id", "type", "value"])
+            d = d[d["type"] == "EPS"]
+            q = pd.to_datetime(d["date"]).dt.quarter
+            for sid, y, qq, v in zip(d["stock_id"], pd.to_datetime(d["date"]).dt.year, q, d["value"]):
+                out[(str(sid), f"{y}Q{qq}")] = float(v)
+    return out
+
+
 def _self_change(sr: dict, prev: dict | None):
     """回傳 (基準說明, {項目: 變動%}, 單月EPS)。prev 有值用月增；否則單月×3 對上一季。"""
     items = {"營收": "營收", "母公司淨利": "獲利", "EPS": "EPS"}
@@ -465,6 +484,7 @@ def _stale_flags(ev: pd.DataFrame, start: str) -> pd.Series:
 def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
     idx, theme_ind, theme_stock = _index(ev, mk)
     selfs = _selfreports(ev)
+    qeps = _quarter_eps(pd.Timestamp(start).year - 2)
     ev = ev.copy()
     ev["stale"] = _stale_flags(ev, start)
     attn_days = defaultdict(list)                 # 個股 → 有事件的日序 (算「近期熱門股」)
@@ -577,6 +597,13 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             h = hot((named or r.tw_list)[0], r.time)
             if h:
                 s += W["investigation_hot"]; why.append(f"近期熱門股 ({h}) +{W['investigation_hot']}")
+        # ---- 國外競爭者技術突破/量產領先 (沒有台股主角)：衝擊台股題材的供需與價格預期 (長鑫 4F² DRAM)
+        rv_themes = set(r.theme_list) & CROSS_THEMES      # 題材看標題+內文 (「DDR5 RDIMM」標題沒有記憶體兩字)
+        if news_like and not r.tw and ({"日韓陸大廠", "美系巨頭"} & set(r.ent_list)) and rv_themes \
+                and RIVAL_RE.search(r.title) and not RIVAL_NOT_RE.search(r.title) and "疑問句" not in r.modifiers:
+            partner = partner or f"{'+'.join(sorted(rv_themes))}|競局"
+            s += W["rival_breakthrough"]; direction = "空"
+            why.append(f"國外競爭者突破 ({RIVAL_RE.search(r.title)[0]}) 衝擊「{'/'.join(sorted(rv_themes))}」預期 +{W['rival_breakthrough']}")
         # ---- 龍頭法說/事件點名的受害股 (使用者：要推)：標題點名 2~3 檔台股，其中一檔是近期熱門股 (龍頭)，另一檔被說成受害。
         #      受惠清單 (「XX、YY 等受惠」) 多是概念股彙整，不算。疑問句/行情用語的受害報導仍算 (「友達躺著也中槍」)。
         if news_like and 2 <= len(named) <= FOCUS_MAX_STOCKS:
@@ -749,7 +776,24 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             elif r.stance == "證實":
                 s += W["clarify_confirm"]; why.append(f"公司證實報導 +{W['clarify_confirm']}")
             sr = data.get("自結", {})
-            if sr.get("解析存疑"):
+            if sr.get("資料季") and sr.get("EPS_單季") is not None:      # 季自結 (均華案)：對上季與去年同季 EPS
+                y, qn = int(sr["資料季"][:4]), int(sr["資料季"][-1])
+                prev_q = f"{y}Q{qn - 1}" if qn > 1 else f"{y - 1}Q4"
+                cmp = {"上季": qeps.get((r.stocks, prev_q)), "去年同季": qeps.get((r.stocks, f"{y - 1}Q{qn}"))}
+                chg = {k: round((sr["EPS_單季"] / v - 1) * 100, 1) for k, v in cmp.items() if v and v > 0}
+                if chg:
+                    k, v = max(chg.items(), key=lambda x: abs(x[1]))
+                    detail = "、".join(f"較{a}{b:+.0f}%" for a, b in chg.items())
+                    if abs(v) >= SELF_CHG_BIG:
+                        s += W["selfreport_q_big"]; why.append(f"季自結 EPS {sr['EPS_單季']} 元 {detail} +{W['selfreport_q_big']}")
+                        if all(x >= SELF_CHG_BIG for x in chg.values()) and len(chg) == 2:
+                            s += W["selfreport_q_both"]; why.append(f"季增與年增同步 +{W['selfreport_q_both']}")
+                        direction = direction or ("多" if v > 0 else "空")
+                    else:
+                        why.append(f"(季自結 EPS {sr['EPS_單季']} 元 {detail}，變動不大)")
+                else:
+                    why.append(f"(季自結 EPS {sr['EPS_單季']} 元，無可比較季度)")
+            elif sr.get("解析存疑"):
                 why.append("(自結表格解析存疑，未計分)")
             elif sr.get("資料月份"):
                 ym = pd.Period(sr["資料月份"], "M")
