@@ -37,6 +37,8 @@ STOCK_INFO = "/mnt/d/finmind_data/TaiwanStockInfo/TaiwanStockInfo.parquet"
 ENV_FILES = [Path("/home/tearicee/daily_script/src/notifiers/disposal_intraday/.env"),
              Path("/home/tearicee/daily_script/.env")]
 GAP_MIN, GAP_SIGMA, SCORE_HIT = 3.0, 2.0, 7.0
+PEER_PREV, PEER_GAP, PEER_GROUP_MAX = 9.0, 4.0, 40   # 同族群動態：昨日漲 ≥9% (漲停) 或今早跳空 ≥4% 的同子題材成員；子題材超過 40 檔太泛不看
+PRICE = "/mnt/d/finmind_data/TaiwanStockPrice/*/TaiwanStockPrice_{day}.parquet"
 
 
 def load_keys() -> tuple:
@@ -83,6 +85,44 @@ def take_snapshot(day: str) -> pd.DataFrame:
     return df
 
 
+def peer_moves(df: pd.DataFrame, prev_trade: pd.Timestamp):
+    """code → 「子題材：成員 昨+9.9% / 今+4.5%」。無新聞的大漲跌常是同族群龍頭漲停後的外溢 (律勝跟台郡/台虹，2026-10-19)，
+    用使用者對照表的子題材找同族群成員，昨日漲停或今早也跳空的列出來。"""
+    from event_rules import rules as R
+    prev = {}
+    px = glob.glob(PRICE.format(day=prev_trade.strftime("%Y-%m-%d")))
+    if px:
+        p = pd.read_parquet(px[0], columns=["stock_id", "close", "spread"])
+        prev = dict(zip(p["stock_id"], (p["spread"] / (p["close"] - p["spread"]) * 100).round(1)))
+    gap, names = dict(zip(df["code"], df["跳空%"])), dict(zip(df["code"], df["名稱"]))
+    subs = {k: v for k, v in R.THEME_STOCKS.items() if R.THEME_PARENT.get(k, k) != k and len(v) <= PEER_GROUP_MAX}
+    groups = {}                                      # 名稱互為前綴的子題材視為同一條鏈 (PCB-軟板 ↔ PCB-軟板材料FCCL)；併完超過上限就只用自己
+    for k, v in subs.items():
+        kin = [k2 for k2 in subs if k2 != k and (k2.startswith(k) or k.startswith(k2))]
+        union = list(dict.fromkeys(v + [m for k2 in kin for m in subs[k2]]))
+        groups[k] = union if len(union) <= PEER_GROUP_MAX else v
+
+    def moves(code: str) -> str:
+        seen, out = set(), []                        # 每檔同族群成員只列一次 (FOPLP 有 70 個子題材，不能每個都重複列)
+        for k, members in groups.items():
+            if code not in members:
+                continue
+            hits = []
+            for m in members:
+                a, b = prev.get(m), gap.get(m)
+                if m == code or m in seen or not ((a is not None and a >= PEER_PREV) or (b is not None and b >= PEER_GAP)):
+                    continue
+                seen.add(m)
+                hits.append(names.get(m, m) + (f" 昨{a:+.1f}%" if a is not None and a >= PEER_PREV else "")
+                            + (f" 今{b:+.1f}%" if b is not None and b >= PEER_GAP else ""))
+            if hits:
+                out.append(f"{k}：{'、'.join(hits[:5])}")
+            if len(out) >= 3:
+                break
+        return "；".join(out)
+    return moves
+
+
 def analyze(df: pd.DataFrame, day: str) -> tuple:
     df = df[(df["open"] > 0) & (df["reference"] > 0)].copy()
     df = df[df["ts"].astype(str).str[:10] == day]      # 今天還沒成交的個股 (停牌、尚未開出) 快照是舊的，不算
@@ -103,16 +143,19 @@ def analyze(df: pd.DataFrame, day: str) -> tuple:
     # 前一日 13:30 → 今早 的事件
     sc = pd.concat(pd.read_parquet(x) for x in sorted(glob.glob(SCORED))[-2:])
     prev_close = None
-    days = sorted(set(sc["time"].dt.normalize()))
     today = pd.Timestamp(day)
-    prev_trade = max((d for d in days if d < today), default=today - pd.Timedelta(days=1))
+    # 前一交易日看價格檔 (不能用有事件的日子：週末也有重訊，會把視窗起點算成週日而漏掉週五晚上的新聞)
+    px_days = sorted(x[-18:-8] for x in glob.glob(PRICE.format(day="*")))
+    prev_trade = pd.Timestamp(max((d for d in px_days if d < day), default=(today - pd.Timedelta(days=1)).strftime("%Y-%m-%d")))
     win = sc[(sc["time"] >= prev_trade + pd.Timedelta(hours=13, minutes=30)) & (sc["time"] < today + pd.Timedelta(hours=9))]
+    moves = peer_moves(df, prev_trade)
     rows, nonews = [], []
     for r in flagged.reindex(flagged["相對跳空%"].abs().sort_values(ascending=False).index).to_dict("records"):
         ev = win[win["stocks"].astype(str).str.contains(rf"(?:^|,){r['code']}(?:,|$)")]
         base = {"日期": day, "代號": r["code"], "名稱": r["名稱"], "產業": r["產業"], "跳空%": r["跳空%"],
                 "類股跳空%": r["類股跳空%"], "相對跳空%": r["相對跳空%"], "類股標準差": r["類股標準差"],
-                "大盤跳空%": round(market_gap, 2), "開盤價": r["open"], "參考價": r["reference"], "量比": r["volume_ratio"]}
+                "大盤跳空%": round(market_gap, 2), "開盤價": r["open"], "參考價": r["reference"], "量比": r["volume_ratio"],
+                "同族群動態": moves(r["code"])}
         if ev.empty:
             nonews.append(base)
             continue
@@ -161,7 +204,8 @@ def main() -> int:
     for r in rev.head(8).to_dict("records"):
         lines.append(f"{r['類別']}｜{r['代號']} {r['名稱']} {r['相對跳空%']:+.1f}%｜<{r['最高事件分']}> {str(r['標題'])[:40]}")
     for r in nonews.head(5).to_dict("records"):
-        lines.append(f"無新聞｜{r['代號']} {r['名稱']} {r['相對跳空%']:+.1f}%（{r['產業']}）")
+        lines.append(f"無新聞｜{r['代號']} {r['名稱']} {r['相對跳空%']:+.1f}%（{r['產業']}）"
+                     + (f"｜同族群 {str(r['同族群動態'])[:60]}" if r.get("同族群動態") else ""))
     msg = "\n".join(lines)
     print(msg)
     if "--no-push" not in sys.argv:   # 這支跑在只有 shioaji 的 venv，推播交給 data_collector 的 venv

@@ -90,6 +90,7 @@ WEIGHTS = {
     "raise_progress": 4.5,                                           # 代收價款行庫/收足股款：籌資進入執行階段 (使用者：要看到，原 2.0 永遠到不了門檻)
     "politics_no_industry": -1.0,                                    # 政要新聞沒有產業指向 (純政治)
     "foreign_partner": 5.0,                                          # 標題點名的台股與國外大廠合作/入股 (傳聞也算，不扣傳聞分)
+    "raise_news_only": -2.0,                                         # 媒體報導增資/私募但近 5 天沒有該公司的籌資重訊 (使用者：增資以公開資訊觀測站為主，新聞太慢；多半是舊案回顧或誤標)
     "raise_hot": 1.0,                                                # 籌資決議的公司是近期熱門股 (關注度偏高或近 5 日大漲)
     "public_incident": 5.0, 
     "investigation": 4.5, "investigation_hot": 1.5, 
@@ -175,6 +176,8 @@ DENY_DAYS = 5                                      # 公司發重訊否認題材
 NOVEL_GRACE_DAYS = 14                              # 題材新穎度寬限：近 14 天才開始共現的仍算「新題材」
 FOCUS_MAX_STOCKS = 3                               # 題材新穎度只看「主角明確」的文章 (台股代號 ≤3 檔)
 BASKET_DAYS, BASKET_SIZE, BASKET_MIN = 180, 15, 3
+RAISE_TAGS = {"現金增資", "私募", "可轉債", "公司債", "籌資進度"}
+RAISE_NEWS_DAYS = 5                                 # 媒體的增資報導要對得上近 5 天內的籌資重訊，才併入重訊事件
 RAISE_BIG, RAISE_MID = 20.0, 10.0                  # 籌資金額占股本 (%)：2026-09 樣本 現增中位數 10.8%、75 分位 39%
 RAISE_BIG_FIN, RAISE_MID_FIN = 10.0, 5.0           # 金融業股本龐大，門檻減半
 FIN_INDUSTRIES = {"金融保險業", "金融業", "證券業", "保險業"}
@@ -197,7 +200,7 @@ REV_MIN_TWD = 0.5e8                                          # 單月營收 <0.5
 HEAT_GLOB = "/mnt/d/mops/news/heat/熱度快照_*.parquet"
 FX = {"TWD": 1, "USD": 32, "CNY": 4.4, "JPY": 0.21, "EUR": 35, "HKD": 4.1}
 # 彙整型文章 (盤前/盤後/週報/懶人包) 一篇帶十幾個主題，標籤與對象都不可靠 → 不評分也不計入歷史
-ROUNDUP_RE = (r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤|飆股出爐|排行榜|前\d+大|\d+大飆股|熱度爆棚|台股收|台股.{0,6}\d{4,5}點|加權指數|大盤|櫃買指數|集中市場|晨訊|晨報|日報】|投顧|新名單|處置.{0,6}名單|抓去關|[2-9]\d*\s*檔|1\d+\s*檔"
+ROUNDUP_RE = (r"盤後|盤前|盤中|大事回顧|一周|一週|周報|週報|懶人包|要聞|焦點股|早報|晚報|速報|優分析|操盤|本周|本週|下周|下週|族群重點|量大強漲|開盤|收盤|飆股出爐|排行榜|前\d+大|\d+大飆股|熱度爆棚|台股收|台股.{0,6}\d{4,5}點|加權指數|大盤|櫃買指數|集中市場|晨訊|晨報|日報】|投顧|新名單|處置.{0,6}名單|抓去關|[2-9]\d*\s*檔|1\d+\s*檔|[二三四五六七八九十]檔"
               r"|漫圖|秒懂|一文(讀懂|看懂|搞懂)|整理包|圖解|市場觀測站|就市論勢|觀測站／|操作$|靈活操作|操作(策略|建議|心法)"
               r"|財經大事|搶先看|[\d一二三四五六七八九十]+件.{0,4}(大事|事要知道)")
 
@@ -374,10 +377,13 @@ def _index(ev: pd.DataFrame, mk: Market):
     days = defaultdict(set)
     theme_ind = defaultdict(Counter)
     theme_stock = defaultdict(list)
-    for d, tags, ttags, ents, stocks, tw, themes, tthemes, title in zip(
+    for d, tags, ttags, ents, stocks, tw, themes, tthemes, title, src in zip(
             ev["day"], ev["tag_list"], ev["ttag_list"], ev["ent_list"], ev["stock_list"], ev["tw_list"],
-            ev["theme_list"], ev["ttheme_list"], ev["title"]):
+            ev["theme_list"], ev["ttheme_list"], ev["title"], ev["source"]):
         o = d.toordinal()
+        if src == "重訊" and RAISE_TAGS & set(tags):
+            for s in stocks:
+                days[("M", s, "籌資")].add(o)      # 籌資重訊：媒體的增資報導要對得上它才算
         if 0 < len(tw) <= FOCUS_MAX_STOCKS and PARTNER_RE.search(title):
             for f in _foreign(title):              # 個股×國外大廠：兩者同在標題、且是合作語氣才算 (競爭/比較的報導不算)
                 for s in tw:
@@ -406,6 +412,12 @@ def _index(ev: pd.DataFrame, mk: Market):
 def _prior(idx: dict, key, o: int) -> int:
     lst = idx.get(key, [])
     return bisect.bisect_left(lst, o) - bisect.bisect_left(lst, o - LOOKBACK)
+
+
+def _within(idx: dict, key, lo: int, hi: int) -> int:
+    """key 在 [lo, hi] 這些日 (ordinal) 出現的天數。"""
+    lst = idx.get(key, [])
+    return bisect.bisect_right(lst, hi) - bisect.bisect_left(lst, lo)
 
 
 def _basket(theme_stock: dict, theme: str, o: int) -> list:
@@ -647,6 +659,13 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             s += W["listing_day"]; why.append(f"增資/新股上市買賣日 +{W['listing_day']}")
         if "籌資進度" in tagset and r.source == "重訊":
             s += W["raise_progress"]; why.append(f"籌資進入執行階段 (代收價款/收足股款) +{W['raise_progress']}")
+        # ---- 增資以公開資訊觀測站為主 (使用者)：媒體的增資/私募報導對得上近 5 天的籌資重訊就併進去，對不上 (舊案回顧/誤標) 扣分
+        if news_like and RAISE_TAGS & tagset and len(r.tw_list) == 1:
+            c = r.tw_list[0]
+            if _within(idx, ("M", c, "籌資"), o - RAISE_NEWS_DAYS, o):
+                partner = partner or f"{c}|籌資"; why.append("(增資報導併入籌資重訊事件)")
+            else:
+                s += W["raise_news_only"]; why.append(f"增資報導無對應籌資重訊 {W['raise_news_only']}")
         tag_days = {t: _prior(idx, t, o) for t in (ttags or r.tag_list)}
         if tag_days:
             t, n = min(tag_days.items(), key=lambda x: x[1])
@@ -756,6 +775,8 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                         why.append(f"({kind} {x[amt] / 1e8:,.1f} 億占股本 {ratio:.1f}%)")
                     raised = True
                     break
+            if raised:
+                partner = partner or f"{r.stocks}|籌資"      # 同一檔的增資/私募/可轉債：重訊與媒體後續報導併成同一事件
             if raised and sub:
                 s += W["subsidiary"]; why.append(f"子公司事件 {W['subsidiary']}")
             if raised and cold:
