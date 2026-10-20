@@ -155,13 +155,15 @@ data_collector/
 
 ## 📁 gpu_prices/ — GPU 雲官網價格（Nebius／Lambda／RunPod／CoreWeave）
 
-每週一抓四家官網價格頁，解析成長表（每 GPU-小時美元）存 `D:/gpu_cloud_prices/`：`prices.parquet`（全部快照，含 snapshot_date）、`latest.csv`（最新一次）、`source/<日期>/<家>.html`（原始頁面，解析器壞了可重解）。
+每天 09:30 抓四家官網價格頁，解析成長表（每 GPU-小時美元）存 `D:/gpu_cloud_prices/`：`prices.parquet`（全部快照，含 snapshot_date）、`latest.csv`（最新一次）、`changes.csv`（相對前一次快照的變動／新增／消失，看調價歷史用）、`source/<日期>/<家>.html`（原始頁面，解析器壞了可重解）。
+
+頻率的依據：四家官網揭露的都是**牌價**，變動是離散事件（Nebius 2026-10-01、10-08 各調一次；RunPod 頁面標 10-08 更新；10/20→10/21 實測 134 列零變動，含 CoreWeave Spot）。Nebius 真正的即時 Spot 市價只在主控台，官網只給地板價，抓更密沒有意義；每天一次（4 次請求）就能取得確切的調價日。
 
 | 檔案 | 用途 |
 |---|---|
 | `sources.py` | 四家解析器與型號正規化（H100 SXM/PCIe/NVL、A100 40/80GB、MIG 切片分開）；`tier` 的意義見檔頭 |
 | `collect.py` | 抓取＋存檔；`--compare` 印各家隨選價對照；`--from-dir` 用已存 html 重解；任一家列數低於 `MIN_ROWS` 視為頁面改版 → exit 1 告警 |
-| `run_gpu_prices.sh` | cron 啟動（週一 09:30），心跳 `gpu_prices`（weekly） |
+| `run_gpu_prices.sh` | cron 啟動（每天 09:30），心跳 `gpu_prices`（daily）；失敗經 `run_with_alert` 發錯誤回報頻道（2026-10-21 實測送達） |
 | `test_gpu_prices.py` | 解析器單元測試（迷你頁面片段，不連網） |
 
 比價時注意：Nebius 價格已含 vCPU/RAM、搶占價是動態市價的地板價；CoreWeave 只給整台價（÷GPU 數換算）；RunPod 分 Secure（`on_demand`）／Community；Lambda 未含稅。預留／長約折扣四家都只寫「洽業務」，資料集裡只有 Lambda 1-Click Cluster 的公告價。

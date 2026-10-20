@@ -123,6 +123,22 @@ class CollectTest(unittest.TestCase):
                 self.assertEqual(piv.loc["H200", "nebius"], 5.40)
                 self.assertEqual(piv.loc["H200", "coreweave"], 6.31)
                 self.assertEqual(piv.loc["H200", "runpod"], 5.29)
+                self.assertTrue(collect.changes(Path(d)).empty)            # 只有一次快照，沒有可比的
+
+                # 第二天：Nebius H200 漲價、RunPod 少一款、Lambda 多一列 → changes.csv 只記這三種
+                (src / "nebius.html").write_text(NEBIUS.replace("$5.40", "$5.90"), encoding="utf-8")
+                (src / "runpod.html").write_text(RUNPOD.replace("H200 GPU on Runpod", "H100 GPU on Runpod"), encoding="utf-8")
+                df2, _ = collect.collect(Path(d), date(2026, 10, 21), from_dir=src)
+                collect.save(df2, Path(d))
+                diff = collect.changes(Path(d))
+                kinds = diff.groupby("kind").size().to_dict()
+                self.assertEqual(kinds, {"變動": 1, "新增": 2, "消失": 2})
+                row = diff[diff["kind"] == "變動"].iloc[0]
+                self.assertEqual((row["provider"], row["price_before"], row["price_after"]), ("nebius", 5.40, 5.90))
+                log = __import__("pandas").read_csv(Path(d) / "changes.csv")
+                self.assertEqual(len(log), 5)
+                collect.changes(Path(d))                                   # 同一天重算不會重複寫
+                self.assertEqual(len(__import__("pandas").read_csv(Path(d) / "changes.csv")), 5)
             finally:
                 sources.MIN_ROWS = limits
 

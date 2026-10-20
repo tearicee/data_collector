@@ -4,6 +4,7 @@
 輸出 (D:/gpu_cloud_prices)：
   prices.parquet            全部快照的長表 (snapshot_date + sources.COLUMNS)，同一天重跑會覆蓋當天
   latest.csv                最新一次快照 (給人看／Excel)
+  changes.csv               每次快照相對前一次的變動／新增／消失 (有變動才寫；看調價歷史用這個)
   source/<日期>/<家>.html    當次抓到的原始頁面 (解析器壞了可以重解)
 心跳 gpu_prices；任何一家解析出的列數少於 sources.MIN_ROWS 視為頁面改版，exit 1 讓排程告警。
 
@@ -94,13 +95,59 @@ def compare(df: pd.DataFrame, tier: str = "on_demand") -> pd.DataFrame:
     return piv.dropna(how="all")
 
 
-def _heartbeat(stats: dict, n_total: int, ok: bool) -> None:
+PRICE_COLS = ["price_gpu_hour_usd", "price_instance_hour_usd"]
+
+
+def changes(root: Path = ROOT, day: str | None = None) -> pd.DataFrame:
+    """最新快照 vs 前一次快照：價格變動／新增／消失的列。四家官網都是牌價，變動是離散事件
+    (Nebius 2026-10-01、10-08 各調一次；RunPod 頁面標 10-08 更新)，每天抓一次就能抓到確切的變動日。
+    結果追加到 changes.csv (變動才寫)，看歷史變動不用自己 diff parquet。"""
+    path = root / "prices.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    days = sorted(df["snapshot_date"].unique())
+    day = day or days[-1]
+    prev = [d for d in days if d < day]
+    if not prev:
+        return pd.DataFrame()
+    key = ["provider", "sku", "tier", "region", "gpus_per_instance", "commitment"]
+    cur = df[df["snapshot_date"] == day].set_index(key)
+    old = df[df["snapshot_date"] == prev[-1]].set_index(key)
+    rows = []
+    for idx in cur.index.union(old.index):
+        a = old.loc[idx] if idx in old.index else None
+        b = cur.loc[idx] if idx in cur.index else None
+        if a is None or b is None:
+            kind = "新增" if a is None else "消失"
+            p0, p1 = (None, b["price_gpu_hour_usd"]) if a is None else (a["price_gpu_hour_usd"], None)
+        else:
+            if all(pd.isna(a[c]) and pd.isna(b[c]) or a[c] == b[c] for c in PRICE_COLS):
+                continue
+            kind, p0, p1 = "變動", a["price_gpu_hour_usd"], b["price_gpu_hour_usd"]
+        rows.append({"snapshot_date": day, "prev_date": prev[-1], "kind": kind, **dict(zip(key, idx)),
+                     "gpu_model": (b if b is not None else a)["gpu_model"], "price_before": p0, "price_after": p1})
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        log = root / "changes.csv"
+        if log.exists():
+            seen = pd.read_csv(log, dtype=str)
+            if (seen["snapshot_date"] == day).any():                 # 同一天重跑：先去掉舊的
+                seen = seen[seen["snapshot_date"] != day]
+            out = pd.concat([seen, out.astype(str)], ignore_index=True)
+        out.to_csv(log, index=False, encoding="utf-8-sig")
+        out = pd.DataFrame(rows)
+    return out
+
+
+def _heartbeat(stats: dict, n_total: int, ok: bool, n_changes: int) -> None:
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from common import heartbeat
         heartbeat.write("gpu_prices", status="ok" if ok else "fail", exit_code=0 if ok else 1,
-                        message=f"四家共 {sum(stats['rows'].values())} 列", cadence="weekly",
-                        stats={"rows": stats["rows"], "failed": stats["failed"], "total_rows": n_total})
+                        message=f"四家共 {sum(stats['rows'].values())} 列，較前次變動 {n_changes} 列", cadence="daily",
+                        stats={"rows": stats["rows"], "failed": stats["failed"], "total_rows": n_total,
+                               "changes": n_changes})
     except Exception:                                    # noqa: BLE001
         pass
 
@@ -116,16 +163,21 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     df, stats = collect(args.root, args.date, args.from_dir, tuple(p for p in args.providers.split(",") if p))
-    n_total = len(df)
+    n_total, diff = len(df), pd.DataFrame()
     if not args.dry_run and not df.empty:
         n_total = save(df, args.root)
+        diff = changes(args.root, df["snapshot_date"].iloc[0])
     ok = not stats["failed"]
-    print(f"[gpu_prices] 完成: 各家列數 {stats['rows']} | 失敗 {stats['failed']} | 資料集共 {n_total} 列")
+    print(f"[gpu_prices] 完成: 各家列數 {stats['rows']} | 失敗 {stats['failed']} | 資料集共 {n_total} 列 | "
+          f"較前次快照變動 {len(diff)} 列")
+    if not diff.empty:
+        with pd.option_context("display.width", 200, "display.max_columns", 20):
+            print(diff[["kind", "provider", "sku", "tier", "region", "price_before", "price_after"]].to_string(index=False))
     if args.compare and not df.empty:
         with pd.option_context("display.width", 200, "display.max_columns", 20):
             print(compare(df).to_string(float_format=lambda v: f"{v:.2f}"))
     if not args.dry_run and not args.from_dir:
-        _heartbeat(stats, n_total, ok)
+        _heartbeat(stats, n_total, ok, len(diff))
     return 0 if ok else 1
 
 
