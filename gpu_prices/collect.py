@@ -111,9 +111,16 @@ def changes(root: Path = ROOT, day: str | None = None) -> pd.DataFrame:
     prev = [d for d in days if d < day]
     if not prev:
         return pd.DataFrame()
-    key = ["provider", "sku", "tier", "region", "gpus_per_instance", "commitment"]
-    cur = df[df["snapshot_date"] == day].set_index(key)
-    old = df[df["snapshot_date"] == prev[-1]].set_index(key)
+    # vram_gb 也要進鍵：Lambda 的「NVIDIA A100 SXM」80GB 與 40GB 同名、同為 8 卡，只差 VRAM
+    key = ["provider", "sku", "tier", "region", "gpus_per_instance", "commitment", "vram_gb"]
+
+    def indexed(part: pd.DataFrame) -> pd.DataFrame:
+        part = part.copy()
+        part["vram_gb"] = part["vram_gb"].fillna(-1)
+        part = part.set_index(key)
+        return part[~part.index.duplicated(keep="first")]      # 再有重複只看第一列，不要讓 .loc 回表而炸掉
+
+    cur, old = indexed(df[df["snapshot_date"] == day]), indexed(df[df["snapshot_date"] == prev[-1]])
     rows = []
     for idx in cur.index.union(old.index):
         a = old.loc[idx] if idx in old.index else None

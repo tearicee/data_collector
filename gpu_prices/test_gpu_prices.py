@@ -30,7 +30,10 @@ def table(head, rows):
 LAMBDA = (table(["Plan", "DURATION", "GPU COUNT", "PRICE/GPU/HR*", "Action"],
                 [["NVIDIA HGX B200", "2 weeks – 1 year", "16", "$9.86", "Talk"]])
           + table(["Plan", "VRAM/GPU", "vCPUs", "RAM", "STORAGE", "PRICE/GPU/HR*"],
-                  [["NVIDIA H100 SXM", "80 GB", "208", "1800 GiB", "22 TiB SSD", "$3.99"]])
+                  [["NVIDIA H100 SXM", "80 GB", "208", "1800 GiB", "22 TiB SSD", "$3.99"],
+                   # 真實頁面：同名 A100 SXM 兩列只差 VRAM，changes() 的鍵要能分開
+                   ["NVIDIA A100 SXM", "80 GB", "240", "1800 GiB", "19.5 TiB SSD", "$2.79"],
+                   ["NVIDIA A100 SXM", "40 GB", "124", "1800 GiB", "5.8 TiB SSD", "$1.99"]])
           + table(["Plan", "VRAM/GPU", "vCPUs", "RAM", "STORAGE", "PRICE/GPU/HR*"],
                   [["NVIDIA H100 SXM", "80 GB", "104", "900 GiB", "11 TiB SSD", "$4.09"]]))
 
@@ -71,9 +74,10 @@ class ParserTest(unittest.TestCase):
     def test_lambda(self):
         rows = sources.parse_lambda(LAMBDA)
         od = [r for r in rows if r["tier"] == "on_demand"]
-        self.assertEqual([r["gpus_per_instance"] for r in od], [8, 4])
+        self.assertEqual([r["gpus_per_instance"] for r in od], [8, 8, 8, 4])
         self.assertEqual(od[0]["price_instance_hour_usd"], 31.92)
         self.assertEqual((od[0]["gpu_model"], od[0]["variant"], od[0]["vram_gb"]), ("H100", "SXM", 80))
+        self.assertEqual([r["gpu_model"] for r in od[1:3]], ["A100 80GB", "A100 40GB"])
         res = [r for r in rows if r["tier"] == "reserved_cluster"][0]
         self.assertEqual((res["gpu_model"], res["price_gpu_hour_usd"], res["gpus_per_instance"]), ("B200", 9.86, 16))
 
