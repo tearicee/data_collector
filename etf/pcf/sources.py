@@ -192,11 +192,7 @@ class Cathay(Source):
              ("GetETFDetailFutureList", "期貨", "ftNo", "ftName", "volumn", None, "ntMkval", "ftDate"))
 
     def _get(self, url: str, params: dict) -> dict:
-        h = self.ad.headers()
-        h["Referer"] = cathay.REFERER
-        r = self.ad.session.get(url, params=params, headers=h, timeout=TIMEOUT)
-        r.raise_for_status()
-        d = r.json()
+        d = self.ad.get_json(url, params)                       # 403 會停一下重試 (見 cathay.py)
         return d if str(d.get("returnCode")) == "2000" else {}
 
     def _fund(self, code: str) -> str:

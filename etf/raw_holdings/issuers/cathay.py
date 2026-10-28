@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+import sys
+import time
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -27,6 +29,8 @@ from base import IssuerAdapter, register
 API = "https://cwapi.cathaysite.com.tw/api/ETF"
 REFERER = "https://www.cathaysite.com.tw/ETF"
 REQUEST_TIMEOUT = (10, 30)
+FORBIDDEN_RETRIES = 2       # 403 重試次數
+FORBIDDEN_WAIT_S = 20       # 第 n 次重試前等 n×20 秒
 
 # 各類別欄位映射 (端點, asset_type, {id,name,shares,weight})；shares/weight 對應
 # 欄名不存在時該值留空 (None)。
@@ -67,12 +71,24 @@ class CathayAdapter(IssuerAdapter):
         self._map: dict[str, str] | None = None      # stockCode → 內部 fundCode
 
     def _get(self, endpoint: str, params: dict) -> dict:
+        return self.get_json(f"{API}/{endpoint}", params)
+
+    def get_json(self, url: str, params: dict, retries: int = FORBIDDEN_RETRIES) -> dict:
+        """國泰 cwapi 偶發整批回 403 (2026-10-23、10-26 各一晚，隔天自己恢復)，像是 WAF 限流；
+        403 就停一下再試，其餘 HTTP 錯誤照丟。pcf/sources.py 的 Cathay 也走這裡。"""
         headers = self.headers()
         headers["Referer"] = REFERER
-        res = self.session.get(f"{API}/{endpoint}", params=params,
-                               headers=headers, timeout=REQUEST_TIMEOUT)
-        res.raise_for_status()
-        return res.json()
+        for attempt in range(retries + 1):
+            res = self.session.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+            if res.status_code == 403 and attempt < retries:
+                wait = FORBIDDEN_WAIT_S * (attempt + 1)
+                print(f"[raw] 國泰 {url.rsplit('/', 1)[-1]} 回 403，{wait}s 後重試 ({attempt + 1}/{retries})",
+                      file=sys.stderr)
+                time.sleep(wait)
+                continue
+            res.raise_for_status()
+            return res.json()
+        return {}
 
     def _load_map(self) -> dict[str, str]:
         if self._map is not None:
