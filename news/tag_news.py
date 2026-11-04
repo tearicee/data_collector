@@ -42,9 +42,23 @@ def load_names() -> dict:
             if len(n) >= 2 and n not in AMBIGUOUS}
 
 
+ALIAS_FILE = "/mnt/d/mops/news/mapping/個股別名.csv"   # 子公司/品牌/舊名 → 母公司代號 (永豐銀→2890、北富銀→2881…)，使用者維護
+
+def load_aliases() -> dict:
+    """別名 → 代號。永豐銀 11/03 盜轉案 40 多則新聞標題只寫「永豐銀」，比對不到「永豐金」→ 熱度、首見、題材全部接不上。"""
+    import csv
+    try:
+        with open(ALIAS_FILE, encoding="utf-8-sig", newline="") as f:
+            return {r["別名"].strip(): r["股票代號"].strip() for r in csv.DictReader(f)
+                    if r.get("別名", "").strip() and re.fullmatch(r"[1-9]\d{3}", r.get("股票代號", "").strip())}
+    except FileNotFoundError:
+        return {}
+
+
 NAMES = load_names()
-CODE_NAMES = {c: n for n, c in NAMES.items()}
-NAME_RE = re.compile("|".join(sorted(map(re.escape, NAMES), key=len, reverse=True))) if NAMES else None
+CODE_NAMES = {c: n for n, c in NAMES.items()}          # 代號 → 正式簡稱 (別名不進這裡)
+MATCH = {**load_aliases(), **NAMES}                   # 比對用：正式簡稱優先於別名
+NAME_RE = re.compile("|".join(sorted(map(re.escape, MATCH), key=len, reverse=True))) if MATCH else None
 
 
 def codes_from_names(title: str, body: str) -> list:
@@ -53,7 +67,7 @@ def codes_from_names(title: str, body: str) -> list:
     out = []
     for n in dict.fromkeys(NAME_RE.findall(title or "")):
         if len(n) >= 3 or (body or "").count(n) >= 2:
-            out.append(NAMES[n])
+            out.append(MATCH[n])
     return out
 
 
