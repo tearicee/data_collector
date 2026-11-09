@@ -198,6 +198,9 @@ class FakeSource(sources.Source):
     def close(self):
         pass
 
+    def reset(self):
+        type(self).calls.append(("reset",))
+
 
 class SameDaySource(FakeSource):
     """以資料日為鍵的來源 (沒有「明天」的資料)；weights 可指定某天的權重。"""
@@ -221,6 +224,7 @@ class CollectTest(unittest.TestCase):
             [{"市值排名": "1", "代號": "0050", "名稱": "元大台灣卓越50", "投信": "元大", "市場": "國內"}])
         store.price_days = lambda price_dir=None: [d for d in DAYS if d <= "2026-10-02"]
         FakeSource.calls = []
+        collect.RETRY_WAIT = 0
 
     def tearDown(self):
         store.load_universe, store.price_days = self._universe, self._price_days
@@ -279,6 +283,22 @@ class CollectTest(unittest.TestCase):
         FakeSource.data = {}
         stats = self.run_collect({}, source=Broken)
         self.assertEqual(stats["failed"], ["0050"])
+
+    def test_transient_failure_is_retried_once_after_reset(self):
+        class FlakyOnce(FakeSource):
+            failed = False
+
+            def holdings(self, code, day):
+                if day == "2026-10-02" and not FlakyOnce.failed:
+                    FlakyOnce.failed = True
+                    type(self).calls.append(("h", code, day))
+                    raise ValueError("Expecting value: line 1 column 1")      # 復華偶回非 JSON
+                return super().holdings(code, day)
+        stats = self.run_collect({d: 1 for d in DAYS}, source=FlakyOnce)
+        self.assertEqual(stats["failed"], [])
+        self.assertIn(("reset",), FakeSource.calls)
+        self.assertEqual(FakeSource.calls.count(("h", "0050", "2026-10-02")), 2)
+        self.assertIn("2026-10-02", set(store.load_constituents("0050", self.root)["交易日"]))
 
     def test_days_fetched_before_a_failure_are_kept(self):
         class FailsOnLastDay(FakeSource):

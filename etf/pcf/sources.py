@@ -128,6 +128,17 @@ class Source:
         except Exception:                                # noqa: BLE001
             pass
 
+    def reset(self):
+        """查詢失敗後重建連線：關掉舊 adapter（playwright 的瀏覽器關了就不能再用），換成新的實例，
+        REGISTRY 也換掉讓後面的人拿到活的。中信的「已選到哪一檔」狀態一併清掉。"""
+        self.close()
+        ad = getattr(self, "ad", None)
+        if ad is not None:
+            self.ad = type(ad)(ad.issuer)
+            base.REGISTRY[self.adapter_key] = self.ad
+        if hasattr(self, "_selected"):
+            self._selected = None
+
 
 # --------------------------------------------------------------------------- #
 class Yuanta(Source):

@@ -43,7 +43,13 @@ def fetch(mk: str, ym: str) -> tuple:
     html = r.content.decode(enc, "ignore")
     mod = r.headers.get("Last-Modified", "")
     mod = parsedate_to_datetime(mod).astimezone().strftime("%Y-%m-%d %H:%M:%S") if mod else ""
-    tabs = [t for t in pd.read_html(io.StringIO(html)) if t.shape[1] == 11 and t.shape[0] >= 1]
+    try:
+        tables = pd.read_html(io.StringIO(html))
+    except (ValueError, ImportError):
+        # 月初新月份的頁面還沒有表格 (或整頁不是正常 HTML) 時 lxml 解析不到，pandas 會退回 html5lib
+        # 而這台沒裝 → ImportError；2026-11-01~02 因此每 30 分鐘告警一次。沒有表格就是「尚無資料」。
+        tables = []
+    tabs = [t for t in tables if t.shape[1] == 11 and t.shape[0] >= 1]
     if not tabs:
         return pd.DataFrame(columns=COLS), mod
     df = pd.concat(tabs, ignore_index=True)

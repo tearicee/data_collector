@@ -12,6 +12,6 @@ cd "$DC_ROOT" || exit 1
 {
     exec 9>/mnt/d/mops/month_revenue/.lock
     flock -n 9 || { echo "$(date '+%F %T') [SKIP] 上一輪尚未結束"; exit 0; }
-    "$DC_ROOT/common/run_with_alert.sh" month_revenue -- \
+    "$DC_ROOT/common/run_with_alert.sh" --once-per-day month_revenue -- \
         "$DC_ROOT/.venv/bin/python" "$DC_ROOT/material_info/download_month_revenue.py"
 } >> "$LOG_DIR/poll_$(date +%Y%m).log" 2>&1

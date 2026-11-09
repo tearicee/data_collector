@@ -38,6 +38,7 @@ FORWARD_DAYS = 6       # 往後找下一個交易日的曆日數 (涵蓋連假�
 FORWARD_MISSES = 2     # 往後連續幾個平日查無資料就停 (清單還沒公告；隔天會當成缺漏補上)
 SAME_DAY_HOUR = 17     # 以資料日為鍵的來源 (國泰/復華持股明細、富邦)，當天的資料幾點以後才查
 SLEEP = 1.0            # 每查一個 (代號, 日期) 後的間隔秒數
+RETRY_WAIT = 15        # 單次查詢失敗後，重建連線再試一次前等幾秒
 
 
 def _d(s: str) -> date:
@@ -149,17 +150,29 @@ def collect(root: Path | None = None, codes: str | None = None, since: str | Non
                     stored = store.load_constituents(code, root)
                     have_h = set(stored["交易日"].dropna().unique())
 
+                    def ask(fn):
+                        """查一次；失敗就等一下、重建連線再試一次（復華偶回非 JSON、中信清單偶爾載不全、
+                        群益偶爾逾時，都是隔一輪就好的那種）。"""
+                        try:
+                            return fn()
+                        except Exception as e:                  # noqa: BLE001
+                            print(f"[pcf] {issuer} {code} 查詢失敗 ({type(e).__name__})，{RETRY_WAIT}s 後重建連線重試",
+                                  file=sys.stderr)
+                            time.sleep(RETRY_WAIT)
+                            src.reset()
+                            return fn()
+
                     def fetch(day: str, want_s: bool, want_h: bool) -> bool:
                         """查一天；有新資料回 True。"""
                         got = False
                         if want_s:
-                            s = src.summary(code, day)
+                            s = ask(lambda: src.summary(code, day))
                             if s and s.trade_day not in have_s:
                                 new_rows.append(summary_row(etf, s, cal))
                                 have_s.add(s.trade_day)
                                 got = True
                         if want_h:
-                            h = src.holdings(code, day)
+                            h = ask(lambda: src.holdings(code, day))
                             if h and h.trade_day not in have_h:
                                 frame = constituent_frame(etf, h, cal)
                                 known = pd.concat([stored, *frames], ignore_index=True)     # 含本次剛抓到的

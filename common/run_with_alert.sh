@@ -17,11 +17,15 @@ set -u
 DC_ROOT=/home/tearicee/data_collector
 VENV_PY="$DC_ROOT/.venv/bin/python"
 
-CADENCE_ARGS=()
-if [ "${1:-}" = "--cadence" ]; then
-    CADENCE_ARGS=(--cadence "${2:?--cadence 需要值}")
-    shift 2
-fi
+CADENCE_ARGS=(); ONCE_PER_DAY=0
+while :; do
+    case "${1:-}" in
+        --cadence) CADENCE_ARGS=(--cadence "${2:?--cadence 需要值}"); shift 2 ;;
+        --once-per-day) ONCE_PER_DAY=1; shift ;;      # 同一任務同一天只告警一次 (每 30 分鐘輪詢的任務用)
+        *) break ;;
+    esac
+done
+ALERT_STATE_DIR=/mnt/d/monitoring/alert_state
 
 JOB="${1:-unknown}"; shift || true
 if [ "${1:-}" = "--" ]; then shift; fi
@@ -47,6 +51,17 @@ if [ "$rc" -eq 0 ]; then STATUS=ok; else STATUS=fail; fi
     >/dev/null 2>&1 || true
 
 # 失敗即時告警 (log 尾段 1500 bytes)
+if [ "$rc" -ne 0 ] && [ "$ONCE_PER_DAY" -eq 1 ]; then
+    # 2026-11-01~02 month_revenue 每 30 分鐘失敗一次，兩天發了 48 則一模一樣的告警
+    mkdir -p "$ALERT_STATE_DIR"
+    FLAG="$ALERT_STATE_DIR/${JOB}_$(date +%F).flag"
+    if [ -e "$FLAG" ]; then
+        echo "[$JOB] 今天已告警過，不重複發 (exit=$rc)"
+        exit "$rc"
+    fi
+    touch "$FLAG"
+    find "$ALERT_STATE_DIR" -name '*.flag' -mtime +7 -delete 2>/dev/null || true
+fi
 if [ "$rc" -ne 0 ]; then
     TAIL="$(tail -c 1500 "$TMPLOG")"
     "$VENV_PY" -c "
