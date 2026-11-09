@@ -197,8 +197,15 @@ def instant(dry: bool, resend_hours: int = 0, test: bool = False) -> int:
 
 
 def daily(dry: bool) -> int:
-    sc, nm = load(), names()
     now = pd.Timestamp.now()
+    if now.hour < 12:                       # 08:20 盤前：整份晨報 (達門檻事件 + 題材熱點 + 今日事件)，使用者 2026-11-09 要求
+        from event_rules import morning_brief
+        msg = morning_brief.build(now)
+        print(msg)
+        if not dry:
+            notify_discord.post(msg, webhook_url=webhook(), code_block=False)
+        return 0
+    sc, nm = load(), names()
     today = now.normalize()
     # 08:20 盤前版：昨天 14:00 以後到現在；21:30 晚間版：今天 14:00 以後 (收盤後的重訊/新聞)
     start = (today - pd.Timedelta(days=1) if now.hour < 12 else today) + pd.Timedelta(hours=14)

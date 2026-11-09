@@ -103,6 +103,9 @@ WEIGHTS = {
     "entity": 1.0, "amount_big": 1.0, "routine": -3.0, "mops_source": 0.5,
     "clarify_deny_runup": 4.5, "clarify_deny": 1.0, "clarify_confirm": 1.5,
     "selfreport_q_big": 4.5, "selfreport_q_both": 1.0,              # 季自結 EPS 較上季或去年同季 ≥50% (兩者都 ≥50% 再加)
+    "leader_expansion": 5.0,                                         # 台系龍頭/熱門股傳出跨入新產品線 (台積電 3D DRAM/記憶體)：傳聞也要看，同一檔當天併成一則
+    "foreign_scandal": 4.5,                                          # 美系巨頭/政要本人的醜聞、間諜、國會傳喚、董事會調查 (黃仁勳共諜案)；方向空
+    "sec_catalyst": 5.0,                                             # 沒有台股主角的重大資安事件/國家級資安投資 (幣安被駭、日本砸 100 億日圓迎戰 AI 網攻)：資安族群受惠；方向多
     "rival_breakthrough": 4.0,                                       # 國外競爭者技術突破/量產領先，衝擊台股題材 (長鑫 4F² DRAM)；方向空
     "selfreport_chg": 1.5, "selfreport_chg_big": 4.5, "selfreport_both": 1.0, "selfreport_loss_runup": 1.0, "multi_source": 0.5,
     "mkt_stock_limit": 2.0, "mkt_stock_big": 1.0, "mkt_theme_strong": 2.0, "mkt_theme_mild": 1.0, "mkt_cap": 3.0,
@@ -162,6 +165,12 @@ GUIDE_TAGS = {"法說會", "財測", "資本支出/擴廠", "訂單/合約", "�
 RIVAL_RE = re.compile(r"(技術|量產|設計|架構|製程|晶片|產品|良率).{0,6}(突破|領先|超前|進展|搶先|改寫|超車)|(突破|領先|超前|搶先|超車|追上|改寫|趕上).{0,8}(技術|量產|設計|架構|製程|三星|SK海力士|海力士|輝達|NVIDIA|台積電|美光)"
                       r"|提前.{0,4}量產|完成.{0,8}(設計|開發)|領先.{0,4}\d+\s*年|超前.{0,4}\d+\s*年")
 RIVAL_NOT_RE = re.compile(r"待突破|成.{0,4}突破關鍵|瓶頸|受制|尚未突破")
+EXPAND_RE = re.compile(r"(進軍|跨足|跨入|切入|揮軍|擬產|擬生產|跨領域).{0,10}(記憶體|HBM|DRAM|面板|電動車|機器人|衛星|AI晶片|ASIC|晶圓代工|封測|CPO|矽光子|資料中心|電力|儲能|生技|無人機|半導體|AI伺服器|光通訊)|"
+                       r"(記憶體|HBM|DRAM|面板|電動車|機器人|衛星|晶圓代工|封測|CPO|矽光子|半導體|光通訊).{0,6}(新賽道|新事業|新戰場)")
+EXPAND_NOT_RE = re.compile(r"供應商|供應鏈|受惠|概念股|客戶|訂單|採用|出貨|擴產|產能|設備|材料|法說|財報|營收|股價|目標價|評等|漲停|大漲|重挫|億元")   # 本業範圍內的消息不算跨入
+SCANDAL_RE = re.compile(r"間諜|共諜|醜聞|婚外情|國會.{0,8}(說明|作證|傳喚|聽證)|董事會.{0,8}調查|遭.{0,6}(起訴|逮捕|拘留|調查|搜索)|(執行長|CEO|董事長|創辦人).{0,8}(請辭|下台|辭職|遭撤換)|涉貪|洗錢|走私|內線")
+SEC_EVENT_RE = re.compile(r"遭駭|被駭|駭客|網攻|網路攻擊|資安事件|資料外洩|個資外洩|勒索|遭竊|盜轉|資安(預算|投資|監控|法|戰略|韌性)|資安.{0,6}(砸|投入|擴大)")
+SEC_SCALE_RE = re.compile(r"\d+\s*(億|兆)|萬人|萬筆|史上|最大|全球|國家|政府|央行|監管|金管會|擴大|全面|緊急|凍結")
 FIN_GLOB = "/mnt/d/finmind_data/TaiwanStockFinancialStatements/*/TaiwanStockFinancialStatements_*.parquet"
 STATEMENT_RE = re.compile(r"策略[:：]|看法|觀點")
 SPILL_NEG_RE = re.compile(r"受害|受衝擊|衝擊|中槍|受累|拖累|受災|開了?法會|受壓|利空|殃及|遭殃|掃到|重傷|連跌|致命傷")
@@ -616,6 +625,25 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
             partner = partner or f"{'+'.join(sorted(rv_themes))}|競局"
             s += W["rival_breakthrough"]; direction = "空"
             why.append(f"國外競爭者突破 ({RIVAL_RE.search(r.title)[0]}) 衝擊「{'/'.join(sorted(rv_themes))}」預期 +{W['rival_breakthrough']}")
+        # ---- 台系龍頭/熱門股傳出跨入新產品線 (使用者 2026-11-09：台積電 3D DRAM 沒抓到)：傳聞也要，公司已發重訊否認後不再算
+        if news_like and named and EXPAND_RE.search(r.title) and not EXPAND_NOT_RE.search(r.title) and "疑問句" not in r.modifiers:
+            lead = [c for c in named if re.search(R.ENTITIES["台系龍頭"], mk.names.get(c, c)) or hot(c, r.time)]
+            lead = [c for c in lead if not any(pd.Timedelta(0) <= r.time - t_ <= pd.Timedelta(days=DENY_DAYS) for t_ in denied[c])]
+            if lead and r.tw and lead[0] in r.tw_list:
+                partner = partner or f"{lead[0]}|跨業"
+                s += W["leader_expansion"]; why.append(f"龍頭/熱門股跨入新產品線 ({EXPAND_RE.search(r.title)[0]}) +{W['leader_expansion']}")
+        # ---- 美系巨頭/政要本人的醜聞、間諜、國會傳喚、董事會調查 (使用者 2026-11-09：黃仁勳共諜案沒抓到)：沒有台股主角也要，方向空
+        if news_like and not r.tw and ({"美系巨頭", "政要"} & set(r.ent_list)) and SCANDAL_RE.search(r.title) and "疑問句" not in r.modifiers:
+            who = next((m.group(0) for m in re.finditer(R.ENTITIES["政要"] + "|" + R.ENTITIES["美系巨頭"], r.title)), "巨頭")
+            partner = partner or f"{who}|醜聞"
+            s += W["foreign_scandal"]; direction = "空"
+            why.append(f"國外巨頭/政要醜聞或調查 ({who}：{SCANDAL_RE.search(r.title)[0]}) +{W['foreign_scandal']}")
+        # ---- 沒有台股主角的重大資安事件/國家級資安投資 (使用者 2026-11-09：日本砸 100 億日圓迎戰 AI 網攻；幣安被駭)：資安族群受惠，方向多
+        if news_like and not r.tw and "資安" in r.ttheme_list and SEC_EVENT_RE.search(r.title) and SEC_SCALE_RE.search(r.title) \
+                and not ({"疑問句", "行情描述"} & set(r.modifiers)):
+            partner = partner or "資安|外部事件"
+            s += W["sec_catalyst"]; direction = "多"
+            why.append(f"重大資安事件/資安投資 ({SEC_EVENT_RE.search(r.title)[0]})，資安族群受惠 +{W['sec_catalyst']}")
         # ---- 龍頭法說/事件點名的受害股 (使用者：要推)：標題點名 2~3 檔台股，其中一檔是近期熱門股 (龍頭)，另一檔被說成受害。
         #      受惠清單 (「XX、YY 等受惠」) 多是概念股彙整，不算。疑問句/行情用語的受害報導仍算 (「友達躺著也中槍」)。
         if news_like and 2 <= len(named) <= FOCUS_MAX_STOCKS:

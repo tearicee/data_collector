@@ -168,8 +168,8 @@ def _heat(asof: pd.Timestamp) -> dict:
     return sc.groupby("stocks")["heat"].max().to_dict()
 
 
-def build(asof: pd.Timestamp, start: pd.Timestamp) -> tuple:
-    lo, hi = start.normalize(), start.normalize() + pd.Timedelta(days=6)
+def build(asof: pd.Timestamp, start: pd.Timestamp, days: int = 7) -> tuple:
+    lo, hi = start.normalize(), start.normalize() + pd.Timedelta(days=days - 1)
     heat, names = _heat(asof), TN.CODE_NAMES
     ne, me = news_events(asof, lo, hi), mops_events(asof, lo, hi, heat, names)
     exp = ne[ne["預期"]].copy() if len(ne) else pd.DataFrame()

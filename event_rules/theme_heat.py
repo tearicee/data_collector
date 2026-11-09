@@ -142,9 +142,10 @@ def fmt_signal(sig: dict, prev: dict, prev_day) -> str:
     return s
 
 
-def run_slot(slot: str, dry: bool) -> int:
+def compose(slot: str, now: pd.Timestamp | None = None) -> tuple:
+    """回傳 (訊息, 訊號列, 起算時間)。pre：前一交易日 13:30 → now；post：今天 00:00 → now。"""
     listed, names = _info()
-    now = pd.Timestamp.now()
+    now = now or pd.Timestamp.now()
     today = now.normalize()
     pct = load_prices((today - pd.Timedelta(days=120)).strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"), listed)
     prev_day = max(d for d in pct.index if d < today) if slot == "pre" else pct.index.max()
@@ -160,18 +161,29 @@ def run_slot(slot: str, dry: bool) -> int:
         rows.append({"day": today, "slot": slot, **{k: v for k, v in sg.items() if k != "headlines"},
                      "headlines": " | ".join(sg["headlines"]), "prev_day": prev_day, **{k: v for k, v in prev.items() if not isinstance(v, list)},
                      "limit_up": "、".join(prev.get("limit_up", [])), "hv_members": "、".join(prev.get("hv_members", []))})
-    msg = "\n".join(lines)
-    print(msg)
-    if not sigs:
-        return 0
+    return "\n".join(lines), rows, t0
+
+
+def save_rows(rows: list, today: pd.Timestamp, slot: str) -> None:
+    if not rows:
+        return
     SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
     path = SIGNAL_DIR / f"題材熱點_{today:%Y-%m}.parquet"
     old = pd.read_parquet(path) if path.exists() else pd.DataFrame()
     new = pd.DataFrame(rows)
     pd.concat([old[~((old.get("day") == today) & (old.get("slot") == slot))] if len(old) else old, new]).to_parquet(path, index=False)
+
+
+def run_slot(slot: str, dry: bool) -> int:
+    now = pd.Timestamp.now()
+    msg, rows, _ = compose(slot, now)
+    print(msg)
+    if not rows:
+        return 0
+    save_rows(rows, now.normalize(), slot)
     if not dry:
         from event_rules import push_discord as P
-        P.guarded_send([{"key": f"theme-{slot}-{today:%Y-%m-%d}", "time": now, "score": 10.0, "text": msg}])
+        P.guarded_send([{"key": f"theme-{slot}-{now:%Y-%m-%d}", "time": now, "score": 10.0, "text": msg}])
     return 0
 
 
