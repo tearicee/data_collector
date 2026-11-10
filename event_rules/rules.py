@@ -99,7 +99,7 @@ ENTITIES = {
     "美系巨頭": r"輝達|NVIDIA|Nvidia|蘋果|Apple|微軟|Microsoft|亞馬遜|Amazon|AWS|Google|谷歌|Alphabet|Meta|特斯拉|Tesla|"
                 r"OpenAI|超微|AMD|英特爾|Intel|博通|Broadcom|高通|Qualcomm|美光|Micron|SpaceX|甲骨文|Oracle|Marvell|戴爾|Dell|美超微",
     "台系龍頭": r"台積電|鴻海|聯發科|廣達|台達電|日月光|聯電|大立光|中華電|富邦金|國泰金",
-    "日韓陸大廠": r"三星|SK海力士|SK Hynix|索尼|Sony|軟銀|SoftBank|豐田|華為|比亞迪|寧德時代|中芯|小米|阿里|騰訊|立訊|長鑫|CXMT|長江存儲|YMTC|鎧俠|Kioxia|Rapidus",
+    "日韓陸大廠": r"三星|SK海力士|SK Hynix|索尼|Sony|軟銀|SoftBank|豐田|華為|比亞迪|寧德時代|中芯|小米|阿里|騰訊|立訊|長鑫|CXMT|長江存儲|YMTC|鎧俠|Kioxia|Rapidus|藥明康德|藥明生物|藥明|WuXi|三星生物|Samsung Biologics|凱萊英|康龍化成",
     "政要": r"川普|拜登|習近平|鮑爾|黃仁勳|馬斯克|郭台銘|魏哲家|巴菲特|波克夏",
     "主權/機構": r"國發基金|勞動基金|主權基金|波克夏|貝萊德|淡馬錫|阿布達比",
 }

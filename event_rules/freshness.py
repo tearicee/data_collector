@@ -162,7 +162,8 @@ NEGATED_RE = re.compile(r"(未見|未|不會|沒有|無|不致|不再|並未|免
 GUIDE_NEG_RE = re.compile(r"(拉貨|出貨|動能|需求|訂單|營收|業績).{0,6}(下滑|轉弱|轉淡|放緩|趨緩|衰退|減少)|(客戶|訂單|財測|展望|目標).{0,4}(下修|砍單|調降)"
                           r"|毛利率.{0,8}(新低|下探|承壓|下滑)|買氣不如預期|不如預期|旺季不旺|保守看待|轉趨保守|減產|停產")
 GUIDE_TAGS = {"法說會", "財測", "資本支出/擴廠", "訂單/合約", "報價/供需"}
-RIVAL_RE = re.compile(r"(技術|量產|設計|架構|製程|晶片|產品|良率).{0,6}(突破|領先|超前|進展|搶先|改寫|超車)|(突破|領先|超前|搶先|超車|追上|改寫|趕上).{0,8}(技術|量產|設計|架構|製程|三星|SK海力士|海力士|輝達|NVIDIA|台積電|美光)"
+RIVAL_RE = re.compile(r"(技術|量產|設計|架構|製程|晶片|產品|良率).{0,6}(突破|領先|超前|進展|搶先|改寫|超車)|(突破|領先|超前|搶先|超車|追上|改寫|趕上).{0,8}(技術|量產|設計|架構|製程|三星|SK海力士|海力士|輝達|NVIDIA|台積電|美光)|"
+                      r"(移出|移除|剔除|除名|撤出|解除|豁免|獲准|勝訴|恢復).{0,12}(名單|清單|制裁|禁令|管制|限制)|(名單|清單|制裁|禁令|管制).{0,8}(移出|移除|剔除|除名|解除|豁免)"   # 國外競爭者制裁/名單解除：台廠轉單題材降溫 (藥明康德 1260H 除名)
                       r"|提前.{0,4}量產|完成.{0,8}(設計|開發)|領先.{0,4}\d+\s*年|超前.{0,4}\d+\s*年")
 RIVAL_NOT_RE = re.compile(r"待突破|成.{0,4}突破關鍵|瓶頸|受制|尚未突破")
 EXPAND_RE = re.compile(r"(進軍|跨足|跨入|切入|揮軍|擬產|擬生產|跨領域).{0,10}(記憶體|HBM|DRAM|面板|電動車|機器人|衛星|AI晶片|ASIC|晶圓代工|封測|CPO|矽光子|資料中心|電力|儲能|生技|無人機|半導體|AI伺服器|光通訊)|"
@@ -624,7 +625,7 @@ def score(ev: pd.DataFrame, start: str, mk: Market) -> pd.DataFrame:
                 and RIVAL_RE.search(r.title) and not RIVAL_NOT_RE.search(r.title) and "疑問句" not in r.modifiers:
             partner = partner or f"{'+'.join(sorted(rv_themes))}|競局"
             s += W["rival_breakthrough"]; direction = "空"
-            why.append(f"國外競爭者突破 ({RIVAL_RE.search(r.title)[0]}) 衝擊「{'/'.join(sorted(rv_themes))}」預期 +{W['rival_breakthrough']}")
+            why.append(f"國外競爭者突破/解禁 ({RIVAL_RE.search(r.title)[0]}) 衝擊「{'/'.join(sorted(rv_themes))}」預期 +{W['rival_breakthrough']}")
         # ---- 台系龍頭/熱門股傳出跨入新產品線 (使用者 2026-11-09：台積電 3D DRAM 沒抓到)：傳聞也要，公司已發重訊否認後不再算
         if news_like and named and EXPAND_RE.search(r.title) and not EXPAND_NOT_RE.search(r.title) and "疑問句" not in r.modifiers:
             lead = [c for c in named if re.search(R.ENTITIES["台系龍頭"], mk.names.get(c, c)) or hot(c, r.time)]

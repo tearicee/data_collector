@@ -43,15 +43,15 @@ def list_chains() -> list:
 def chain_members(ic: str) -> tuple:
     page = get(f"{BASE}/introduce.php?ic={ic}")
     name = re.search(r"<title>[^<]*>\s*([^<]+?)產業鏈簡介", page)
-    cats = dict(re.findall(r'id="ic_link_(\w+)" class="company-chain-panel">([^<]+)<', page))
+    cats = {k: re.sub(r"<[^>]+>|\s", "", v) for k, v in
+            re.findall(r'id="ic_link_(\w+)" class="company-chain-panel">(.*?)</div>', page, flags=re.S)}   # 細項名稱可能含 <br/>
     rows = []
-    for m in re.finditer(r'id="([^"]*(' + ic[:2] + r'[0-9A-F]{2})[^"]*)"', page):
-        cid, key = m.group(1), m.group(2)
-        if cid.startswith("ic_link_") or key not in cats:
-            continue
-        nxt = re.search(r'id="[^"]*' + ic[:2] + r'[0-9A-F]{2}[^"]*"', page[m.end():])
-        seg = page[m.end(): m.end() + (nxt.start() if nxt else 20000)]
-        for code, nm in re.findall(r"stk_code=(\d{4})[^>]*>([^<]*)", seg):
+    # 每個細項的公司清單容器 id 含該細項代碼 (非 ic_link_ 前綴)；容器之間以下一個細項代碼的 id 為界
+    spots = sorted((m.start(), m.group(1), key) for key in cats for m in re.finditer(r'id="([^"]*' + re.escape(key) + r'[^"]*)"', page)
+                   if not m.group(1).startswith("ic_link_"))
+    for i, (pos, cid, key) in enumerate(spots):
+        end = spots[i + 1][0] if i + 1 < len(spots) else len(page)
+        for code, nm in re.findall(r"stk_code=(\d{4})[^>]*>([^<]*)", page[pos:end]):
             rows.append((cats[key], code, html.unescape(nm).strip()))
     return (name.group(1).strip() if name else ic), list(dict.fromkeys(rows))
 
