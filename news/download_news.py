@@ -47,6 +47,27 @@ import store  # noqa: E402
 
 CNYES_API = "https://api.cnyes.com/media/api/v1/newslist/category/{cat}"
 CNYES_CATS = {"tw_stock": "台股", "headline": "頭條"}
+CNYES_FILTERED = {"hk_stock": "港股", "cn_stock": "陸股"}   # 使用者 2026-11-10：加港股頻道，只收標題含台股題材詞的 (陸股同規則；藥明康德這類 A+H 股新聞在陸股頻道)
+CNYES_LABEL = {**CNYES_CATS, **CNYES_FILTERED}
+_REL = None
+
+
+def tw_relevant(title: str) -> bool:
+    """港股/陸股頻道的過濾：標題有 (a) 台股重點題材關鍵字 (freshness.CROSS_THEMES + 資安/生技/CDMO) 或 (b) 台股公司名/別名 (≥3 字)
+    或 (c) 與台股供應鏈相關的國外大廠/台系龍頭 (輝達、三星、華為、藥明…)。港股盤後、A 股評論這類不收。"""
+    global _REL
+    if _REL is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from event_rules import freshness as F, rules as R
+        import tag_news as TN
+        th = [re.compile(R.THEMES[k]) for k in (F.CROSS_THEMES | {"資安", "生技", "CDMO"}) if k in R.THEMES]
+        ent = re.compile("|".join(R.ENTITIES[k] for k in ("日韓陸大廠", "美系巨頭", "台系龍頭", "政要"))
+                         + r"|關稅|制裁|出口管制|禁令|實體清單|軍工企業|晶片|半導體|台灣|台廠|台股")   # 政策詞：中美關稅延期、晶片出口管制這類港陸頻道先發的
+        names = re.compile("|".join(sorted((re.escape(n) for n in TN.MATCH if len(n) >= 3), key=len, reverse=True)))
+        _REL = (th, ent, names)
+    th, ent, names = _REL
+    t = title or ""
+    return bool(ent.search(t) or names.search(t) or any(x.search(t) for x in th))
 RSS_FEEDS = [
     ("經濟日報", "產業", "https://money.udn.com/rssfeed/news/1001/5591"),
     ("經濟日報", "股市", "https://money.udn.com/rssfeed/news/1001/5590"),
@@ -149,7 +170,7 @@ def cnyes_range(cat: str, start_ts: int, end_ts: int, counter: list) -> list:
             codes = [m.get("code", "") for m in (d.get("market") or []) if m.get("code")]
             rows.append({
                 "發布時間": datetime.fromtimestamp(int(d["publishAt"])).strftime("%Y-%m-%d %H:%M:%S"),
-                "來源": "鉅亨網", "分類": CNYES_CATS[cat],
+                "來源": "鉅亨網", "分類": CNYES_LABEL[cat],
                 "標題": clean_html(d.get("title")), "摘要": clean_html(d.get("summary")),
                 "內文": clean_html(d.get("content")),
                 "連結": f"https://news.cnyes.com/news/id/{d['newsId']}",
@@ -334,6 +355,13 @@ def poll(hours: int) -> int:
         try:
             rows = cnyes_range(cat, int(since.timestamp()), int(now.timestamp()), counter)
             stats[f"鉅亨-{CNYES_CATS[cat]}"] = (len(rows), store.upsert(rows))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"鉅亨-{cat}: {e}")
+    for cat in CNYES_FILTERED:                     # 港股/陸股：只留標題與台股題材有關的
+        try:
+            rows = cnyes_range(cat, int(since.timestamp()), int(now.timestamp()), counter)
+            keep = [r for r in rows if tw_relevant(r["標題"])]
+            stats[f"鉅亨-{CNYES_FILTERED[cat]}"] = (len(keep), store.upsert(keep))
         except Exception as e:  # noqa: BLE001
             errors.append(f"鉅亨-{cat}: {e}")
     for source, cat, url in RSS_FEEDS:
